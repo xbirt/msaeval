@@ -1,0 +1,5 @@
+*.csv
+*.fasta
+*.tar.gz
+*.tar.bz2
+.vscode
