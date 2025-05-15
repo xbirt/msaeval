@@ -60,8 +60,8 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     seq2 = seq2.upper()
     
     # Replace U with T to ensure DNA-compatible sequences
-    seq1 = seq1.replace('U', 'T')
-    seq2 = seq2.replace('U', 'T')
+    seq1_dna = seq1.replace('U', 'T')
+    seq2_dna = seq2.replace('U', 'T')
     
     # Levenshtein distance
     if timers is not None:
@@ -74,7 +74,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if timers is not None:
         timers['levenshtein'] += time.time() - start
     
-    # DTW - Only compute if requested
+    # DTW (Dynamic Time Warping) - Only compute if requested
     if with_dtw:
         if timers is not None:
             start = time.time()
@@ -97,7 +97,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if timers is not None:
         timers['jaro_winkler'] += time.time() - start
     
-    # LCS sequence length
+    # LCS (Longest Common Subsequence) sequence length
     if timers is not None:
         start = time.time()
     lcs = pylcs.lcs_sequence_length(seq1, seq2)
@@ -108,7 +108,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if timers is not None:
         timers['lcs_length'] += time.time() - start
     
-    # PairwiseAligner score
+    # PairwiseAligner score with default scoring
     if timers is not None:
         start = time.time()
     aligner = PairwiseAligner()
@@ -126,29 +126,52 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     perfect_score_ref = aligner.match_score * len(seq2)
     metrics['normalized_pairwise_aligner_ref'] = score / perfect_score_ref if perfect_score_ref != 0 else 0
     
-    if timers is not None:
-        # Compute pairwise alignment time
-        timers['pairwise_aligner'] += time.time() - start
-
-    # Calculate distances using Bio.Phylo.TreeConstruction.DistanceCalculator
-    if timers is not None:
-        start = time.time()
-
-    # Perform global alignment
+    # Perform global alignment (will be used for other metrics below)
     alignments = aligner.align(seq1, seq2)
     alignment = alignments[0]  # Get the first alignment
     aligned_seq1, aligned_seq2 = str(alignment[0]), str(alignment[1])
     
-    # Create SeqRecord objects for the aligned sequences (ensuring they are DNA compatible)
-    aligned_seq1_dna = aligned_seq1.replace('U', 'T')
-    aligned_seq2_dna = aligned_seq2.replace('U', 'T')
+    # PairwiseAligner with BLASTN scoring
+    if timers is not None:
+        start_blastn = time.time()
     
+    # Create a new aligner with BLASTN scoring
+    blastn_aligner = PairwiseAligner(scoring="blastn")
+    blastn_aligner.mode = 'global'
+    
+    # Use DNA-compatible sequences
+    blastn_score = blastn_aligner.score(seq1_dna, seq2_dna)
+    metrics['pairwise_aligner_blastn'] = blastn_score
+    
+    # Perform alignment with BLASTN scoring to get aligned sequences
+    blastn_alignments = blastn_aligner.align(seq1_dna, seq2_dna)
+    blastn_alignment = blastn_alignments[0]
+    aligned_seq1_dna = str(blastn_alignment[0])
+    aligned_seq2_dna = str(blastn_alignment[1])
+    
+    # Normalized BLASTN scores
+    # For normalization, we need to estimate the perfect score
+    # A rough estimate based on BLASTN match score (typically +1 for matches)
+    blastn_perfect_score = min(len(seq1_dna), len(seq2_dna))  # Assuming match score of 1
+    metrics['normalized_pairwise_aligner_blastn'] = blastn_score / blastn_perfect_score if blastn_perfect_score != 0 else 0
+    metrics['normalized_pairwise_aligner_blastn_ref'] = blastn_score / len(seq2_dna) if len(seq2_dna) != 0 else 0
+    
+    if timers is not None:
+        # Add BLASTN timing to pairwise aligner timing
+        blastn_time = time.time() - start_blastn
+        timers['pairwise_aligner'] += blastn_time
+    
+    # Calculate distances using Bio.Phylo.TreeConstruction.DistanceCalculator
+    if timers is not None:
+        start = time.time()
+    
+    # Use the already DNA-compatible aligned sequences from BLASTN alignment
     seq_record1 = SeqRecord(Seq(aligned_seq1_dna), id="seq1")
     seq_record2 = SeqRecord(Seq(aligned_seq2_dna), id="seq2")
     
     # Create a MultipleSeqAlignment object
     alignment_obj = MultipleSeqAlignment([seq_record1, seq_record2])
-       
+    
     # Calculate distances with different models
     for model in ['identity', 'blastn', 'trans']:
         calculator = DistanceCalculator(model)
@@ -162,7 +185,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     
     if timers is not None:
         # Add tree construction timing to pairwise aligner since they're related
-        timers['distance_calculator'] += time.time() - start
+        timers['pairwise_aligner'] += time.time() - start
     
     return metrics
 
@@ -174,8 +197,7 @@ def process_record(input_record, ref_record, source_records, with_dtw):
         'dtw': 0,
         'jaro_winkler': 0,
         'lcs_length': 0,
-        'pairwise_aligner': 0,
-        'distance_calculator': 0
+        'pairwise_aligner': 0
     } if DEBUG_TIMING else None
     
     # Compare against reference alignment
@@ -237,15 +259,13 @@ def main():
         'dtw': 0,
         'jaro_winkler': 0,
         'lcs_length': 0,
-        'pairwise_aligner': 0,
-        'distance_calculator': 0
+        'pairwise_aligner': 0
     } if DEBUG_TIMING else None
     
     # Create pairs of input and reference records
     record_pairs = list(zip(input_records, ref_align_records))
 
-    # For testing, limit the number of records
-    #record_pairs = record_pairs[:100]
+    record_pairs = record_pairs[:10]
     
     # Process records in parallel
     print(f"Using {args.threads} threads for processing...")
@@ -317,7 +337,7 @@ def main():
     
     # Print timing information if debugging is enabled
     if DEBUG_TIMING:
-        print("\nCPU time Information:")
+        print("\nTiming Information:")
         for metric, elapsed in combined_timers.items():
             print(f"  {metric}: {elapsed:.4f} seconds")
 

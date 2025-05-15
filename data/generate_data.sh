@@ -48,7 +48,7 @@ parallel --jobs $MAX_CORES --link "grinder -reference_file selected_species_{4}_
   -random_seed {2} \
   -fastq_output 1 \
   -qual_levels 30 10 \
-  -base_name {3} > {3}_grinder.log 2>&1" ::: 1000 10000 50000 100000 200000 500000 1000000 2000000 :::+ $(seq $INITIAL_SEED $((INITIAL_SEED+7))) ::: 1k 10k 50k 100k 200k 500k 1m 2m ::: 1000 10000 50000 100000 100000 500000 1000000 1000000
+  -base_name {3} > {3}_grinder.log 2>&1" ::: 1000 10000 50000 100000 200000 500000 1000000 2000000 100 500 :::+ $(seq $INITIAL_SEED $((INITIAL_SEED+7))) ::: 1k 10k 50k 100k 200k 500k 1m 2m 0.1k 0.5k ::: 1000 10000 50000 100000 100000 500000 1000000 1000000 1000 1000
 
 echo "Fișierele cu citiri grinder au fost finalizate."
 
@@ -67,7 +67,7 @@ echo "Fișierul profil pentru CuReSim-LoRM a fost finalizat."
 
 # CuReSim-LoRM nu poate fi executat în paralel deoarece folosește fișiere temporare cu nume predefinit.
 # Procesare secvențială CuReSim-LoRM
-for moniker in 1k 10k 50k 100k 200k 500k 1m 2m; do
+for moniker in 1k 10k 50k 100k 200k 500k 1m 2m 0.1k 0.5k; do
     input_file="${moniker}-reads-filtered.fastq"
     output_file="curesim-${moniker}.fastq"
     
@@ -125,5 +125,5 @@ for file in curesim-*-filtered.fasta; do
     # Redenumim fișierul în X.fasta
     mv "$file" "$x.fasta"
 done
-find . -maxdepth 1 -regextype posix-extended -regex './[0-9]+[km]\.fasta' -print | tar -cvf reads.tar -T -
+find . -maxdepth 1 -regextype posix-extended -regex './[\.0-9]+[km]\.fasta' -print | tar -cvf reads.tar -T -
 bzip2 reads.tar
