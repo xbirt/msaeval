@@ -14,7 +14,7 @@ sudo apt install -y --no-install-recommends git curl build-essential r-base r-cr
     libxml2-dev libglpk-dev libgsl-dev libfftw3-dev libtiff-dev libjpeg-dev libpng-dev \
     libx11-dev libxt-dev libbz2-dev liblzma-dev libpcre3-dev libicu-dev libfontconfig1-dev \
     libfreetype6-dev libharfbuzz-dev libfribidi-dev libgmp-dev libmpfr-dev libblas-dev \
-    liblapack-dev gfortran parallel porechop vsearch seqtk minimap2 racon bcftools
+    liblapack-dev gfortran parallel porechop vsearch seqtk minimap2 racon bcftools screen
 wget https://sourceforge.net/projects/biogrinder/files/biogrinder/Grinder-0.5.4/Grinder-0.5.4.tar.gz/download -O Grinder-0.5.4.tar.gz
 tar xzf Grinder-0.5.4.tar.gz
 rm -f Grinder-0.5.4.tar.gz

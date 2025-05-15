@@ -2,7 +2,8 @@
 
 set -e
 
-sudo apt update && sudo apt install -y --no-install-recommends build-essential libssl-dev libbz2-dev libreadline-dev libsqlite3-dev libopenmpi-dev zlib1g-dev mafft clustalw git curl wget
+sudo apt update
+sudo apt install -y --no-install-recommends build-essential libssl-dev libbz2-dev libreadline-dev libsqlite3-dev libopenmpi-dev zlib1g-dev mafft clustalw git curl wget time screen
 curl -sSL https://pyenv.run | bash
 echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
 echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc

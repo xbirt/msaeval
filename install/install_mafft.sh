@@ -8,8 +8,9 @@ set -e
 #sudo dpkg -i mafft_7.526-1_amd64.deb
 #rm -f mafft_7.526-1_amd64.deb
 
-# golang este necesar pentru DASH
-sudo apt update && sudo apt install -y --no-install-recommends build-essential g++ make golang
+sudo apt update
+# golang este necesar pentru DASH, time pentru benchmark
+sudo apt install -y --no-install-recommends build-essential g++ make golang time screen
 
 wget https://mafft.cbrc.jp/alignment/software/mafft-7.525-with-extensions-src.tgz
 tar xzf mafft-7.525-with-extensions-src.tgz

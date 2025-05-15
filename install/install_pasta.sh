@@ -2,7 +2,8 @@
 
 set -e
 
-sudo apt update && sudo apt install -y --no-install-recommends git python3 python3-pip python3-venv hmmer openjdk-17-jdk mafft fasttree
+sudo apt update
+sudo apt install -y --no-install-recommends git python3 python3-pip python3-venv hmmer openjdk-17-jdk mafft fasttree time screen
 mkdir -p ~/venv/pasta
 python3 -m venv ~/venv/pasta
 source ~/venv/pasta/bin/activate
