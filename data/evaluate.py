@@ -48,7 +48,7 @@ def extract_reference_id(header: str) -> str:
 
 def seq_to_numeric(seq: str) -> List[int]:
     """Convert a sequence to numeric representation for DTW."""
-    mapping = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'N': 4, '-': 5}
+    mapping = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'U': 3, 'N': 4, '-': 5}
     return [mapping.get(c.upper(), 6) for c in seq]
 
 def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[str, float] = None) -> Dict[str, float]:
@@ -60,13 +60,17 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     seq2 = seq2.upper()
     
     # Replace U with T to ensure DNA-compatible sequences
-    seq1_dna = seq1.replace('U', 'T')
-    seq2_dna = seq2.replace('U', 'T')
+    seq1_dna = seq1.replace('U', 'T').replace('u', 't')
+    seq2_dna = seq2.replace('U', 'T').replace('u', 't')
     
     # Levenshtein distance
     if timers is not None:
         start = time.time()
-    lev_dist = Levenshtein.distance(seq1, seq2)
+    try:
+        lev_dist = Levenshtein.distance(seq1, seq2)
+    except Exception as e:
+        print(f"Error in Levenshtein.distance with seq1: {seq1}, seq2: {seq2}")
+        raise
     metrics['levenshtein'] = lev_dist
     metrics['normalized_levenshtein'] = lev_dist / max(len(seq1), len(seq2))
     # Normalize against ref sequence length
@@ -78,9 +82,13 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if with_dtw:
         if timers is not None:
             start = time.time()
-        seq1_num = seq_to_numeric(seq1)
-        seq2_num = seq_to_numeric(seq2)
-        dtw_dist, _ = fastdtw.fastdtw(seq1_num, seq2_num)
+        try:
+            seq1_num = seq_to_numeric(seq1)
+            seq2_num = seq_to_numeric(seq2)
+            dtw_dist, _ = fastdtw.fastdtw(seq1_num, seq2_num)
+        except Exception as e:
+            print(f"Error in fastdtw with seq1: {seq1}, seq2: {seq2}")
+            raise
         metrics['dtw'] = dtw_dist
         metrics['normalized_dtw'] = dtw_dist / (len(seq1) + len(seq2))
         # Normalize against ref sequence length
@@ -91,7 +99,11 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     # Jaro-Winkler Similarity
     if timers is not None:
         start = time.time()
-    jaro = jellyfish.jaro_winkler_similarity(seq1, seq2)
+    try:
+        jaro = jellyfish.jaro_winkler_similarity(seq1, seq2)
+    except Exception as e:
+        print(f"Error in jaro_winkler_similarity with seq1: {seq1}, seq2: {seq2}")
+        raise
     metrics['jaro_winkler'] = jaro
     # Already normalized between 0 and 1
     if timers is not None:
@@ -100,7 +112,11 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     # LCS (Longest Common Subsequence) sequence length
     if timers is not None:
         start = time.time()
-    lcs = pylcs.lcs_sequence_length(seq1, seq2)
+    try:
+        lcs = pylcs.lcs_sequence_length(seq1, seq2)
+    except Exception as e:
+        print(f"Error in pylcs.lcs_sequence_length with seq1: {seq1}, seq2: {seq2}")
+        raise
     metrics['lcs_length'] = lcs
     metrics['normalized_lcs'] = lcs / min(len(seq1), len(seq2))
     # Normalize against ref sequence length
@@ -111,13 +127,17 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     # PairwiseAligner score with default scoring
     if timers is not None:
         start = time.time()
-    aligner = PairwiseAligner()
-    aligner.mode = 'global'
-    aligner.match_score = 5
-    aligner.mismatch_score = -4
-    aligner.open_gap_score = -10
-    aligner.extend_gap_score = -0.5
-    score = aligner.score(seq1, seq2)
+    try:
+        aligner = PairwiseAligner()
+        aligner.mode = 'global'
+        aligner.match_score = 5
+        aligner.mismatch_score = -4
+        aligner.open_gap_score = -10
+        aligner.extend_gap_score = -0.5
+        score = aligner.score(seq1, seq2)
+    except Exception as e:
+        print(f"Error in PairwiseAligner().score with seq1: {seq1}, seq2: {seq2}")
+        raise
     metrics['pairwise_aligner'] = score
     # Normalized by the maximum possible score (all matches)
     perfect_score = aligner.match_score * min(len(seq1), len(seq2))
@@ -127,34 +147,43 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     metrics['normalized_pairwise_aligner_ref'] = score / perfect_score_ref if perfect_score_ref != 0 else 0
     
     # Perform global alignment (will be used for other metrics below)
-    alignments = aligner.align(seq1, seq2)
-    alignment = alignments[0]  # Get the first alignment
-    aligned_seq1, aligned_seq2 = str(alignment[0]), str(alignment[1])
+    try:
+        alignments = aligner.align(seq1, seq2)
+        alignment = alignments[0]  # Get the first alignment
+        aligned_seq1, aligned_seq2 = str(alignment[0]), str(alignment[1])
+    except Exception as e:
+        print(f"Error in PairwiseAligner().align with seq1: {seq1}, seq2: {seq2}")
+        raise
     
+    """ 
     # PairwiseAligner with BLASTN scoring
     if timers is not None:
         start_blastn = time.time()
     
     # Create a new aligner with BLASTN scoring
-    blastn_aligner = PairwiseAligner(scoring="blastn")
-    blastn_aligner.mode = 'global'
-    
-    # Use DNA-compatible sequences
-    blastn_score = blastn_aligner.score(seq1_dna, seq2_dna)
-    metrics['pairwise_aligner_blastn'] = blastn_score
-    
-    # Perform alignment with BLASTN scoring to get aligned sequences
-    blastn_alignments = blastn_aligner.align(seq1_dna, seq2_dna)
-    blastn_alignment = blastn_alignments[0]
-    aligned_seq1_dna = str(blastn_alignment[0])
-    aligned_seq2_dna = str(blastn_alignment[1])
-    
-    # Normalized BLASTN scores
-    # For normalization, we need to estimate the perfect score
-    # A rough estimate based on BLASTN match score (typically +1 for matches)
-    blastn_perfect_score = min(len(seq1_dna), len(seq2_dna))  # Assuming match score of 1
-    metrics['normalized_pairwise_aligner_blastn'] = blastn_score / blastn_perfect_score if blastn_perfect_score != 0 else 0
-    metrics['normalized_pairwise_aligner_blastn_ref'] = blastn_score / len(seq2_dna) if len(seq2_dna) != 0 else 0
+    try:
+        blastn_aligner = PairwiseAligner(scoring="blastn")
+        blastn_aligner.mode = 'global'
+        
+        # Use DNA-compatible sequences
+        blastn_score = blastn_aligner.score(seq1_dna, seq2_dna)
+        metrics['pairwise_aligner_blastn'] = blastn_score
+        
+        # Perform alignment with BLASTN scoring to get aligned sequences
+        blastn_alignments = blastn_aligner.align(seq1_dna, seq2_dna)
+        blastn_alignment = blastn_alignments[0]
+        aligned_seq1_dna = str(blastn_alignment[0])
+        aligned_seq2_dna = str(blastn_alignment[1])
+        
+        # Normalized BLASTN scores
+        # For normalization, we need to estimate the perfect score
+        # A rough estimate based on BLASTN match score (typically +1 for matches)
+        blastn_perfect_score = min(len(seq1_dna), len(seq2_dna))  # Assuming match score of 1
+        metrics['normalized_pairwise_aligner_blastn'] = blastn_score / blastn_perfect_score if blastn_perfect_score != 0 else 0
+        metrics['normalized_pairwise_aligner_blastn_ref'] = blastn_score / len(seq2_dna) if len(seq2_dna) != 0 else 0
+    except Exception as e:
+        print(f"Error in PairwiseAligner(scoring='blastn') with seq1_dna: {seq1_dna}, seq2_dna: {seq2_dna}")
+        raise
     
     if timers is not None:
         # Add BLASTN timing to pairwise aligner timing
@@ -164,29 +193,35 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     # Calculate distances using Bio.Phylo.TreeConstruction.DistanceCalculator
     if timers is not None:
         start = time.time()
-    
+
+
     # Use the already DNA-compatible aligned sequences from BLASTN alignment
-    seq_record1 = SeqRecord(Seq(aligned_seq1_dna), id="seq1")
-    seq_record2 = SeqRecord(Seq(aligned_seq2_dna), id="seq2")
-    
-    # Create a MultipleSeqAlignment object
-    alignment_obj = MultipleSeqAlignment([seq_record1, seq_record2])
-    
-    # Calculate distances with different models
-    for model in ['identity', 'blastn', 'trans']:
-        calculator = DistanceCalculator(model)
-        # Use the alignment object
-        distance_matrix = calculator.get_distance(alignment_obj)
-        # Extract the distance value
-        distance_value = distance_matrix[1][0]  # The matrix is symmetric
+    try:
+        seq_record1 = SeqRecord(Seq(aligned_seq1_dna), id="seq1")
+        seq_record2 = SeqRecord(Seq(aligned_seq2_dna), id="seq2")
         
-        # Store the raw distance
-        metrics[f'distance_{model}'] = distance_value
+        # Create a MultipleSeqAlignment object
+        alignment_obj = MultipleSeqAlignment([seq_record1, seq_record2])
+        
+        # Calculate distances with different models
+        for model in ['identity', 'blastn', 'trans']:
+            calculator = DistanceCalculator(model)
+            # Use the alignment object
+            distance_matrix = calculator.get_distance(alignment_obj)
+            # Extract the distance value
+            distance_value = distance_matrix[1][0]  # The matrix is symmetric
+            
+            # Store the raw distance
+            metrics[f'distance_{model}'] = distance_value
+    except Exception as e:
+        print(f"Error in DistanceCalculator with aligned_seq1_dna: {aligned_seq1_dna}, aligned_seq2_dna: {aligned_seq2_dna}")
+        raise
     
     if timers is not None:
         # Add tree construction timing to pairwise aligner since they're related
         timers['pairwise_aligner'] += time.time() - start
-    
+    """
+        
     return metrics
 
 def process_record(input_record, ref_record, source_records, with_dtw):
@@ -200,31 +235,49 @@ def process_record(input_record, ref_record, source_records, with_dtw):
         'pairwise_aligner': 0
     } if DEBUG_TIMING else None
     
-    # Compare against reference alignment
-    ref_metrics = compute_metrics(str(input_record.seq), str(ref_record.seq), with_dtw, local_timers)
-    ref_metrics['id'] = input_record.id
+    # Initialize variables that might be used in error handling
+    ref_id = None
+    source_record = None
     
-    # Extract source reference ID
-    source_metrics_entry = None
-    ref_id = extract_reference_id(input_record.description)
-    
-    if ref_id:
-        # Find the source record
-        source_record = None
-        for source_id, record in source_records.items():
-            if source_id.startswith(f"{ref_id} ") or source_id == ref_id:
-                source_record = record
-                break
+    try:
+        # Compare against reference alignment
+        ref_metrics = compute_metrics(str(input_record.seq), str(ref_record.seq), with_dtw, local_timers)
+        ref_metrics['id'] = input_record.id
         
-        if source_record:
-            # Compare against source data
-            source_metrics_entry = compute_metrics(str(input_record.seq), str(source_record.seq), with_dtw, local_timers)
-            source_metrics_entry['id'] = input_record.id
-            source_metrics_entry['source_id'] = source_record.id
-    else:
-        print(f"Warning: No reference ID found for record {input_record.id}")
-    
-    return ref_metrics, source_metrics_entry, local_timers if DEBUG_TIMING else None
+        # Extract source reference ID
+        source_metrics_entry = None
+        ref_id = extract_reference_id(input_record.description)
+        
+        if ref_id:
+            # Find the source record
+            for source_id, record in source_records.items():
+                if source_id.startswith(f"{ref_id} ") or source_id == ref_id:
+                    source_record = record
+                    break
+            
+            if source_record:
+                # Compare against source data
+                source_metrics_entry = compute_metrics(str(input_record.seq), str(source_record.seq), with_dtw, local_timers)
+                source_metrics_entry['id'] = input_record.id
+                source_metrics_entry['source_id'] = source_record.id
+        else:
+            print(f"Warning: No reference ID found for record {input_record.id}")
+        
+        return ref_metrics, source_metrics_entry, local_timers if DEBUG_TIMING else None
+    except ValueError as e:
+        if "sequence contains letters not in the alphabet" in str(e):
+            # Print detailed information about the problematic sequences
+            print(f"\nError processing record {input_record.id}:")
+            print(f"Input sequence: {str(input_record.seq)}")
+            print(f"Reference sequence: {str(ref_record.seq)}")
+            if ref_id and source_record:
+                print(f"Source sequence: {str(source_record.seq)}")
+            print(f"Error message: {str(e)}")
+            # Re-raise the exception to maintain the original error flow
+            raise
+        else:
+            # Re-raise other ValueError exceptions
+            raise
 
 def main():
     args = parse_args()
@@ -265,7 +318,7 @@ def main():
     # Create pairs of input and reference records
     record_pairs = list(zip(input_records, ref_align_records))
 
-    record_pairs = record_pairs[:10]
+    #record_pairs = record_pairs[:10]
     
     # Process records in parallel
     print(f"Using {args.threads} threads for processing...")
