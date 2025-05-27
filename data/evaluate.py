@@ -114,7 +114,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if timers is not None:
         start = time.time()
     try:
-        lcs = pylcs.lcs_string_length(seq1.replace('-', 'n'), seq2.replace('-', 'n'))
+        lcs = pylcs.lcs_string_length(seq1, seq2)
     except Exception as e:
         print(f"Error in pylcs.lcs_sequence_length with seq1: {seq1}, seq2: {seq2}")
         raise
@@ -147,82 +147,11 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     perfect_score_ref = aligner.match_score * len(seq2)
     metrics['normalized_pairwise_aligner_ref'] = score / perfect_score_ref if perfect_score_ref != 0 else 0
     
-    # Perform global alignment (will be used for other metrics below)
-    try:
-        alignments = aligner.align(seq1, seq2)
-        alignment = alignments[0]  # Get the first alignment
-        aligned_seq1, aligned_seq2 = str(alignment[0]), str(alignment[1])
-    except Exception as e:
-        print(f"Error in PairwiseAligner().align with seq1: {seq1}, seq2: {seq2}")
-        raise
-    
-    """ 
-    # PairwiseAligner with BLASTN scoring
     if timers is not None:
-        start_blastn = time.time()
-    
-    # Create a new aligner with BLASTN scoring
-    try:
-        blastn_aligner = PairwiseAligner(scoring="blastn")
-        blastn_aligner.mode = 'global'
-        
-        # Use DNA-compatible sequences
-        blastn_score = blastn_aligner.score(seq1_dna, seq2_dna)
-        metrics['pairwise_aligner_blastn'] = blastn_score
-        
-        # Perform alignment with BLASTN scoring to get aligned sequences
-        blastn_alignments = blastn_aligner.align(seq1_dna, seq2_dna)
-        blastn_alignment = blastn_alignments[0]
-        aligned_seq1_dna = str(blastn_alignment[0])
-        aligned_seq2_dna = str(blastn_alignment[1])
-        
-        # Normalized BLASTN scores
-        # For normalization, we need to estimate the perfect score
-        # A rough estimate based on BLASTN match score (typically +1 for matches)
-        blastn_perfect_score = min(len(seq1_dna), len(seq2_dna))  # Assuming match score of 1
-        metrics['normalized_pairwise_aligner_blastn'] = blastn_score / blastn_perfect_score if blastn_perfect_score != 0 else 0
-        metrics['normalized_pairwise_aligner_blastn_ref'] = blastn_score / len(seq2_dna) if len(seq2_dna) != 0 else 0
-    except Exception as e:
-        print(f"Error in PairwiseAligner(scoring='blastn') with seq1_dna: {seq1_dna}, seq2_dna: {seq2_dna}")
-        raise
-    
-    if timers is not None:
-        # Add BLASTN timing to pairwise aligner timing
-        blastn_time = time.time() - start_blastn
-        timers['pairwise_aligner'] += blastn_time
-    
-    # Calculate distances using Bio.Phylo.TreeConstruction.DistanceCalculator
-    if timers is not None:
-        start = time.time()
+        # Add PairwiseAligner timing
+        pairwise_aligner_time = time.time() - start
+        timers['pairwise_aligner'] += pairwise_aligner_time
 
-
-    # Use the already DNA-compatible aligned sequences from BLASTN alignment
-    try:
-        seq_record1 = SeqRecord(Seq(aligned_seq1_dna), id="seq1")
-        seq_record2 = SeqRecord(Seq(aligned_seq2_dna), id="seq2")
-        
-        # Create a MultipleSeqAlignment object
-        alignment_obj = MultipleSeqAlignment([seq_record1, seq_record2])
-        
-        # Calculate distances with different models
-        for model in ['identity', 'blastn', 'trans']:
-            calculator = DistanceCalculator(model)
-            # Use the alignment object
-            distance_matrix = calculator.get_distance(alignment_obj)
-            # Extract the distance value
-            distance_value = distance_matrix[1][0]  # The matrix is symmetric
-            
-            # Store the raw distance
-            metrics[f'distance_{model}'] = distance_value
-    except Exception as e:
-        print(f"Error in DistanceCalculator with aligned_seq1_dna: {aligned_seq1_dna}, aligned_seq2_dna: {aligned_seq2_dna}")
-        raise
-    
-    if timers is not None:
-        # Add tree construction timing to pairwise aligner since they're related
-        timers['pairwise_aligner'] += time.time() - start
-    """
-        
     return metrics
 
 def process_record(input_record, ref_record, source_records, with_dtw):
