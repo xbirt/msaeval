@@ -113,7 +113,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     if timers is not None:
         start = time.time()
     try:
-        lcs = pylcs.lcs_sequence_length(seq1, seq2)
+        lcs = pylcs.lcs_string_length(seq1.replace('-', 'n'), seq2.replace('-', 'n'))
     except Exception as e:
         print(f"Error in pylcs.lcs_sequence_length with seq1: {seq1}, seq2: {seq2}")
         raise
