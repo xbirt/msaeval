@@ -5,6 +5,8 @@ import re
 # This was needed because seqkit was not sorting the fasta file correctly, i.e. record 2
 # would be placed after all records starting with 1 such as 10, 100 etc.
 
+# The script filters out "uncultured bacterium" records.
+
 # Input and output file paths
 input_file = "muscle.fasta"
 output_file = "muscle-sorted.fasta"

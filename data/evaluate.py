@@ -60,10 +60,10 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
     seq2 = seq2.upper()
     
     # Replace U with T to ensure DNA-compatible sequences
-    seq1_dna = seq1.replace('U', 'T').replace('u', 't')
-    seq2_dna = seq2.replace('U', 'T').replace('u', 't')
+    seq1_dna = seq1.replace('U', 'T')
+    seq2_dna = seq2.replace('U', 'T')
     
-    # Levenshtein distance
+    # Levenshtein distance - minimum number of edits to get from seq1 to seq2
     if timers is not None:
         start = time.time()
     try:
@@ -79,6 +79,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
         timers['levenshtein'] += time.time() - start
     
     # DTW (Dynamic Time Warping) - Only compute if requested
+    # DTW is a measure of the distance between two sequences, where the sequences are allowed to be stretched or compressed.
     if with_dtw:
         if timers is not None:
             start = time.time()
@@ -96,7 +97,7 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
         if timers is not None:
             timers['dtw'] += time.time() - start
     
-    # Jaro-Winkler Similarity
+    # Jaro-Winkler Similarity - similarity between two strings, values in [0,1].
     if timers is not None:
         start = time.time()
     try:
