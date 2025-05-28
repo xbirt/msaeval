@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Necesită mafft-xinsi (extensia mxscarna)
+# Inițial proiectat să folosească mafft-xinsi cu extensia mxscarna, însă spațiul de disc necesar este prea mare.
 
 # Construim aliniamente pentru toate referințele
 for size in 1k 10k 50k 100k 200k 500k 1m 2m; do
@@ -23,8 +23,11 @@ for size in 1k 10k 50k 100k 200k 500k 1m 2m; do
         "1m") echo "1000000";;
         "2m") echo "1000000";;
     esac)
-    mafft-xinsi --thread $(nproc) \
-        --scarnapair \
+    mafft --thread $(nproc) \
         $input_file \
         > $output_file
+#    mafft-xinsi --thread $(nproc) \
+#        --scarnapair \
+#        $input_file \
+#        > $output_file
 done
