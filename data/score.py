@@ -403,10 +403,10 @@ def parse_args():
     default_threads = max(1, multiprocessing.cpu_count() - 1)
     
     parser = argparse.ArgumentParser(description="Evaluate RNA sequence alignments")
-    parser.add_argument("alignment_file", help="Path to the alignment file in FASTA format")
-    parser.add_argument("--threads", "-t", type=int, default=default_threads,
+    parser.add_argument('--input', '-i', required=True, help='Path to the alignment file in FASTA format')
+    parser.add_argument('--threads', '-t', type=int, default=default_threads,
                         help=f"Number of threads to use (default: {default_threads})")
-    parser.add_argument("--output-base-name", "--base-output-name", "-o",type=str, 
+    parser.add_argument('--output-base-name', '--base-output-name', '-o', '--output', required=True, type=str, 
                         help="Base name for output files. If provided, stats will be saved to files")
     return parser.parse_args()
 
@@ -448,6 +448,44 @@ def calculate_tc_score(column_counts, threshold=0.7, allow_gaps=False):
     # Calculate the TC score
     tc_score = identical_columns / total_columns if total_columns > 0 else 0
     return tc_score
+
+def calculate_column_consistency_score(column_counts):
+    """
+    Calculate the Column Consistency Score, which is the average of the ratio between
+    the predominant base count and total bases for each column.
+    
+    Args:
+        column_counts: List of Counter objects with counts for each column
+        
+    Returns:
+        float: Average consistency score between 0 and 1
+    """
+    total_columns = len(column_counts)
+    if total_columns == 0:
+        return 0
+        
+    column_scores = []
+    base_string = 'ACGU'  # Excluding gaps
+    
+    # Calculate score for each column
+    for counts in column_counts:
+        total = sum(counts.values())
+        if total == 0:
+            continue
+            
+        # Find the majority nucleotide
+        max_count = 0
+        for base in base_string:
+            if counts[base] > max_count:
+                max_count = counts[base]
+        
+        # Calculate this column's score
+        column_score = max_count / total
+        column_scores.append(column_score)
+    
+    # Calculate the average consistency score
+    consistency_score = sum(column_scores) / len(column_scores) if column_scores else 0
+    return consistency_score
 
 def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     """
@@ -530,6 +568,9 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     tc_score_90 = calculate_tc_score(column_counts, threshold=0.9)
     tc_score_100 = calculate_tc_score(column_counts, threshold=1.0)
     
+    # Calculate column consistency score
+    column_consistency_score = calculate_column_consistency_score(column_counts)
+    
     # Summary statistics
     print("\nSummary Statistics:")
     print("-" * 50)
@@ -542,6 +583,7 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     print(f"TC score (threshold=70%): {tc_score_70:.4f}")
     print(f"TC score (threshold=90%): {tc_score_90:.4f}")
     print(f"TC score (threshold=100%): {tc_score_100:.4f}")
+    print(f"Column consistency score: {column_consistency_score:.4f}")
 
     # Calculate normalization factors
     num_columns = alignment.length
@@ -598,17 +640,17 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     if output_base_name:
         print(f"\nSaving output files with base name: {output_base_name}")
         
-        # 1. Save column statistics
+        # Save column statistics
         column_stats_file = f"{output_base_name}_column_stats.csv"
         save_column_stats(column_counts, column_stats_file)
         print(f"Saved column statistics to {column_stats_file}")
         
-        # 2. Save row gap statistics
+        # Save row gap statistics
         row_gap_stats_file = f"{output_base_name}_row_gap_stats.csv"
         save_row_gap_stats(row_gap_stats, row_gap_stats_file)
         print(f"Saved row gap statistics to {row_gap_stats_file}")
         
-        # 3-6. Save consensus sequences to FASTA files
+        # Save consensus sequences to FASTA files
         save_consensus_to_fasta(no_gap_70, f"{output_base_name}_consensus_70_no_gaps.fasta", 
                                "70% Threshold Consensus (gaps ignored)")
         save_consensus_to_fasta(with_gap_70, f"{output_base_name}_consensus_70_with_gaps.fasta", 
@@ -619,7 +661,7 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
                                "50% Threshold Consensus (gaps included)")
         print(f"Saved consensus sequences to {output_base_name}_consensus_*.fasta files")
         
-        # 7. Save all statistics to a CSV file
+        # Save all statistics to a CSV file
         stats = {
             "Total Rows": num_rows,
             "Total Columns": num_columns,
@@ -651,7 +693,8 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
             "TC Score (50% threshold)": tc_score_50,
             "TC Score (70% threshold)": tc_score_70,
             "TC Score (90% threshold)": tc_score_90,
-            "TC Score (100% threshold)": tc_score_100
+            "TC Score (100% threshold)": tc_score_100,
+            "Column Consistency Score": column_consistency_score
         }
         stats_file = f"{output_base_name}_stats.csv"
         save_stats_to_csv(stats, stats_file)
@@ -659,4 +702,4 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
 
 if __name__ == "__main__":
     args = parse_args()
-    evaluate_alignment(args.alignment_file, args.threads, args.output_base_name)
+    evaluate_alignment(args.input, args.threads, args.output_base_name)

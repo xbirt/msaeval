@@ -258,8 +258,6 @@ def main():
     # Create pairs of input and reference records
     record_pairs = list(zip(input_records, ref_align_records))
 
-    #record_pairs = record_pairs[:10]
-    
     # Process records in parallel
     print(f"Using {args.threads} threads for processing...")
     with ProcessPoolExecutor(max_workers=args.threads) as executor:
