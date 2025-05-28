@@ -140,12 +140,22 @@ def compute_metrics(seq1: str, seq2: str, with_dtw: bool = False, timers: Dict[s
         print(f"Error in PairwiseAligner().score with seq1: {seq1}, seq2: {seq2}")
         raise
     metrics['pairwise_aligner'] = score
-    # Normalized by the maximum possible score (all matches)
+    
+    # Calculate minimum possible score using worst case of mismatches or gaps
+    min_score_per_char = min(aligner.mismatch_score, aligner.open_gap_score)
+    min_score = min_score_per_char * min(len(seq1), len(seq2))
+    min_score_ref = min_score_per_char * len(seq2)
+    
+    # Calculate maximum possible score (all matches)
     perfect_score = aligner.match_score * min(len(seq1), len(seq2))
-    metrics['normalized_pairwise_aligner'] = score / perfect_score if perfect_score != 0 else 0
-    # Normalize against ref sequence length
     perfect_score_ref = aligner.match_score * len(seq2)
-    metrics['normalized_pairwise_aligner_ref'] = score / perfect_score_ref if perfect_score_ref != 0 else 0
+    
+    # Normalize score to [0,1] range by shifting and scaling
+    score_range = perfect_score - min_score
+    score_range_ref = perfect_score_ref - min_score_ref
+    
+    metrics['normalized_pairwise_aligner'] = (score - min_score) / score_range if score_range != 0 else 0
+    metrics['normalized_pairwise_aligner_ref'] = (score - min_score_ref) / score_range_ref if score_range_ref != 0 else 0
     
     if timers is not None:
         # Add PairwiseAligner timing
