@@ -563,8 +563,14 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     print(f"Average gap extensions per nucleotide: {avg_gap_extensions_per_nucleotide:.4f}")
 
     # Calculate TC score with different thresholds
+    tc_score_10 = calculate_tc_score(column_counts, threshold=0.1)
+    tc_score_20 = calculate_tc_score(column_counts, threshold=0.2)
+    tc_score_30 = calculate_tc_score(column_counts, threshold=0.3)
+    tc_score_40 = calculate_tc_score(column_counts, threshold=0.4)
     tc_score_50 = calculate_tc_score(column_counts, threshold=0.5)
+    tc_score_60 = calculate_tc_score(column_counts, threshold=0.6)
     tc_score_70 = calculate_tc_score(column_counts, threshold=0.7)
+    tc_score_80 = calculate_tc_score(column_counts, threshold=0.8)
     tc_score_90 = calculate_tc_score(column_counts, threshold=0.9)
     tc_score_100 = calculate_tc_score(column_counts, threshold=1.0)
     
@@ -579,8 +585,14 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     print(f"Total gaps: {total_gaps}")
     print(f"Total character pairs: {total_pairs}")
     print(f"Gap percentage: {total_gaps / (total_gaps + total_nucleotides):.2%}")
+    print(f"TC score (threshold=10%): {tc_score_10:.4f}")
+    print(f"TC score (threshold=20%): {tc_score_20:.4f}")
+    print(f"TC score (threshold=30%): {tc_score_30:.4f}")
+    print(f"TC score (threshold=40%): {tc_score_40:.4f}")
     print(f"TC score (threshold=50%): {tc_score_50:.4f}")
+    print(f"TC score (threshold=60%): {tc_score_60:.4f}")
     print(f"TC score (threshold=70%): {tc_score_70:.4f}")
+    print(f"TC score (threshold=80%): {tc_score_80:.4f}")
     print(f"TC score (threshold=90%): {tc_score_90:.4f}")
     print(f"TC score (threshold=100%): {tc_score_100:.4f}")
     print(f"Column consistency score: {column_consistency_score:.4f}")
@@ -690,8 +702,14 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
             "Alternative Score Per Column": gap_penalty_score / num_columns,
             "Alternative Score Per Nucleotide": gap_penalty_score / total_nucleotides,
             "Alternative Score Per Pair": gap_penalty_score / total_pairs,
+            "TC Score (10% threshold)": tc_score_10,
+            "TC Score (20% threshold)": tc_score_20,
+            "TC Score (30% threshold)": tc_score_30,
+            "TC Score (40% threshold)": tc_score_40,
             "TC Score (50% threshold)": tc_score_50,
+            "TC Score (60% threshold)": tc_score_60,
             "TC Score (70% threshold)": tc_score_70,
+            "TC Score (80% threshold)": tc_score_80,
             "TC Score (90% threshold)": tc_score_90,
             "TC Score (100% threshold)": tc_score_100,
             "Column Consistency Score": column_consistency_score
