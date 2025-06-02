@@ -1,0 +1,654 @@
+diff --git forkSrcPrefix/scripts/build_kraken2_db.sh forkDstPrefix/scripts/build_kraken2_db.sh
+index bc83218aaabf6b1c21bdfa1be0dff12618f184e3..d64fb23dcb77529a472bcc91318c0360bdde6794 100755
+--- forkSrcPrefix/scripts/build_kraken2_db.sh
++++ forkDstPrefix/scripts/build_kraken2_db.sh
+@@ -131,11 +131,19 @@ then
+   echo "Hash table already present, skipping database file build."
+ else
+   step_time=$(get_current_time)
++  
++  # Build the accession map flag if specified
++  accession_map_flag=""
++  if [ -n "$KRAKEN2_ACCESSION_MAP" ]
++  then
++    accession_map_flag="-a $KRAKEN2_ACCESSION_MAP"
++  fi
++  
+   list_sequence_files | xargs -0 cat | \
+     build_db -k $KRAKEN2_KMER_LEN -l $KRAKEN2_MINIMIZER_LEN -S $KRAKEN2_SEED_TEMPLATE $KRAKEN2XFLAG \
+              -H hash.k2d.tmp -t taxo.k2d.tmp -o opts.k2d.tmp -n taxonomy/ -m $seqid2taxid_map_file \
+              -c $required_capacity -p $KRAKEN2_THREAD_CT $max_db_flag -B $KRAKEN2_BLOCK_SIZE -b $KRAKEN2_SUBBLOCK_SIZE \
+-             -r $KRAKEN2_MIN_TAXID_BITS $fast_build_flag
++             -r $KRAKEN2_MIN_TAXID_BITS $fast_build_flag $accession_map_flag
+   finalize_file taxo.k2d
+   finalize_file opts.k2d
+   finalize_file hash.k2d
+diff --git forkSrcPrefix/scripts/kraken2 forkDstPrefix/scripts/kraken2
+index d1e81d1f491fd35a8d6b63da192783d6d0571a1a..ef5022b5ac41b482831032cf78c1236deb4890fa 100755
+--- forkSrcPrefix/scripts/kraken2
++++ forkDstPrefix/scripts/kraken2
+@@ -49,6 +49,7 @@ my $use_mpa_style = 0;
+ my $report_zero_counts = 0;
+ my $minimum_hit_groups = 2;
+ my $report_minimizer_data = 0;
++my $accession_map;
+ 
+ GetOptions(
+   "help" => \&display_help,
+@@ -72,6 +73,7 @@ GetOptions(
+   "report-zero-counts" => \$report_zero_counts,
+   "minimum-hit-groups=i" => \$minimum_hit_groups,
+   "report-minimizer-data" => \$report_minimizer_data,
++  "accession-map=s" => \$accession_map,
+ );
+ 
+ if (! defined $threads) {
+@@ -140,6 +142,7 @@ push @flags, "-z" if $report_zero_counts;
+ push @flags, "-M" if $memory_mapping;
+ push @flags, "-g", $minimum_hit_groups;
+ push @flags, "-K" if $report_minimizer_data;
++push @flags, "-A", $accession_map if defined $accession_map;
+ 
+ # Stupid hack to keep filehandles from closing before exec
+ # filehandles opened inside for loop below go out of scope
+@@ -216,6 +219,7 @@ Options:
+                           Minimum number of hit groups (overlapping k-mers
+                           sharing the same minimizer) needed to make a call
+                           (default: $minimum_hit_groups)
++  --accession-map FILE    File containing accession to taxid mapping
+   --help                  Print this message
+   --version               Print version information
+ 
+diff --git forkSrcPrefix/scripts/kraken2-build forkDstPrefix/scripts/kraken2-build
+index b27e3da0047d487ddf98f48f955f7d4e3b1d67b0..9313ba0fcd0209de636dfd45bb889f741a9f2104 100755
+--- forkSrcPrefix/scripts/kraken2-build
++++ forkDstPrefix/scripts/kraken2-build
+@@ -57,6 +57,7 @@ my (
+   $block_size,
+   $subblock_size,
+   $minimum_bits_for_taxid,
++  $accession_map,
+ 
+   $dl_taxonomy,
+   $dl_library,
+@@ -113,6 +114,7 @@ GetOptions(
+   "block-size=i" => \$block_size,
+   "subblock-size=i" => \$subblock_size,
+   "minimum-bits-for-taxid=i" => \$minimum_bits_for_taxid,
++  "accession-map=s" => \$accession_map,
+ 
+   "download-taxonomy" => \$dl_taxonomy,
+   "download-library=s" => \$dl_library,
+@@ -189,6 +191,7 @@ $ENV{"KRAKEN2_FAST_BUILD"} = $fast_build ? 1 : "";
+ $ENV{"KRAKEN2_BLOCK_SIZE"} = $block_size;
+ $ENV{"KRAKEN2_SUBBLOCK_SIZE"} = $subblock_size;
+ $ENV{"KRAKEN2_MIN_TAXID_BITS"} = $minimum_bits_for_taxid;
++$ENV{"KRAKEN2_ACCESSION_MAP"} = defined($accession_map) ? $accession_map : "";
+ 
+ if ($dl_taxonomy) {
+   download_taxonomy();
+@@ -272,6 +275,7 @@ Options:
+                              built when using multiple threads.  This is faster,
+                              but does introduce variability in minimizer/LCA
+                              pairs.  Used with --build and --standard options.
++  --accession-map FILE       Output filename for accession map (build task only)
+ EOF
+   exit $exit_code;
+ }
+diff --git forkSrcPrefix/src/build_db.cc forkDstPrefix/src/build_db.cc
+index 3947c53dfe30db286ec1fbcc9c19a2b5bea56761..dfbe6f4c93f99433d30cdaacd2b5f9e9baaf5aa7 100644
+--- forkSrcPrefix/src/build_db.cc
++++ forkDstPrefix/src/build_db.cc
+@@ -12,6 +12,7 @@
+ #include "kv_store.h"
+ #include "kraken2_data.h"
+ #include "utilities.h"
++#include "accession_map.h"
+ 
+ using std::string;
+ using std::map;
+@@ -34,6 +35,7 @@ struct Options {
+   string hashtable_filename;
+   string options_filename;
+   string taxonomy_filename;
++  string accession_map_filename;
+   size_t block_size;
+   size_t subblock_size;
+   size_t requested_bits_for_taxid;
+@@ -51,17 +53,17 @@ struct Options {
+ void ParseCommandLine(int argc, char **argv, Options &opts);
+ void usage(int exit_code = EX_USAGE);
+ vector<string> ExtractNCBISequenceIDs(const string &header);
+-void ProcessSequenceFast(const string &seq, taxid_t taxid,
++void ProcessSequenceFast(const string &seq, taxid_t taxid, const string &accession_id,
+     CompactHashTable &hash, const Taxonomy &tax, MinimizerScanner &scanner,
+-    uint64_t min_clear_hash_value);
+-void ProcessSequence(const Options &opts, const string &seq, taxid_t taxid,
+-    CompactHashTable &hash, const Taxonomy &tax);
++    uint64_t min_clear_hash_value, AccessionMap &accession_map);
++void ProcessSequence(const Options &opts, const string &seq, taxid_t taxid, const string &accession_id,
++    CompactHashTable &hash, const Taxonomy &tax, AccessionMap &accession_map);
+ void ProcessSequencesFast(const Options &opts,
+     const map<string, taxid_t> &ID_to_taxon_map,
+-    CompactHashTable &kraken_index, const Taxonomy &taxonomy);
++    CompactHashTable &kraken_index, const Taxonomy &taxonomy, AccessionMap &accession_map);
+ void ProcessSequences(const Options &opts,
+     const map<string, taxid_t> &ID_to_taxon_map,
+-    CompactHashTable &kraken_index, const Taxonomy &taxonomy);
++    CompactHashTable &kraken_index, const Taxonomy &taxonomy, AccessionMap &accession_map);
+ void SetMinimizerLCA(CompactHashTable &hash, uint64_t minimizer, taxid_t taxid,
+     const Taxonomy &tax);
+ void ReadIDToTaxonMap(map<string, taxid_t> &id_map, string &filename);
+@@ -95,6 +97,9 @@ int main(int argc, char **argv) {
+ 
+   std::cerr << "Taxonomy parsed and converted." << std::endl;
+ 
++  // Enable AccessionMap debug mode for troubleshooting
++  AccessionMap::SetDebugMode(true);
++
+   Taxonomy taxonomy(opts.taxonomy_filename.c_str());
+   taxonomy.GenerateExternalToInternalIDMap();
+   size_t bits_needed_for_value = 1;
+@@ -121,14 +126,33 @@ int main(int argc, char **argv) {
+       bits_for_taxid);
+   std::cerr << "CHT created with " << bits_for_taxid << " bits reserved for taxid." << std::endl;
+ 
++  AccessionMap accession_map;
++  std::cerr << "AccessionMap initialized." << std::endl;
++
+   if (opts.deterministic_build)
+-    ProcessSequences(opts, ID_to_taxon_map, kraken_index, taxonomy);
++    ProcessSequences(opts, ID_to_taxon_map, kraken_index, taxonomy, accession_map);
+   else
+-    ProcessSequencesFast(opts, ID_to_taxon_map, kraken_index, taxonomy);
++    ProcessSequencesFast(opts, ID_to_taxon_map, kraken_index, taxonomy, accession_map);
+ 
+   std::cerr << "Writing data to disk... " << std::flush;
+   kraken_index.WriteTable(opts.hashtable_filename.c_str());
+ 
++  // Write accession map if filename is provided
++  if (!opts.accession_map_filename.empty()) {
++    std::cerr << "Writing accession map... " << std::flush;
++    
++    if (accession_map.IsValid() && !accession_map.Empty()) {
++      try {
++        accession_map.WriteToFile(opts.accession_map_filename);
++        std::cerr << "done (wrote " << accession_map.Size() << " mappings)." << std::endl;
++      } catch (const std::exception &e) {
++        std::cerr << "Warning: Failed to write accession map: " << e.what() << std::endl;
++      }
++    } else {
++      std::cerr << "skipped (no mappings to write)." << std::endl;
++    }
++  }
++
+   IndexOptions index_opts;
+   index_opts.k = opts.k;
+   index_opts.l = opts.l;
+@@ -154,7 +178,7 @@ int main(int argc, char **argv) {
+ void ProcessSequencesFast(const Options &opts,
+                           const map<string, taxid_t> &ID_to_taxon_map,
+                           CompactHashTable &kraken_index,
+-                          const Taxonomy &taxonomy) {
++                          const Taxonomy &taxonomy, AccessionMap &accession_map) {
+   size_t processed_seq_ct = 0;
+   size_t processed_ch_ct = 0;
+ 
+@@ -178,6 +202,13 @@ void ProcessSequencesFast(const Options &opts,
+       while (reader_clone.NextSequence(sequence)) {
+         auto all_sequence_ids = ExtractNCBISequenceIDs(sequence.header);
+         taxid_t taxid = 0;
++        string accession_id = "";
++        
++        // Use the first sequence ID as the accession ID
++        if (!all_sequence_ids.empty()) {
++          accession_id = all_sequence_ids[0];
++        }
++        
+         for (auto &seqid : all_sequence_ids) {
+           if (ID_to_taxon_map.count(seqid) == 0 ||
+               ID_to_taxon_map.at(seqid) == 0)
+@@ -190,8 +221,8 @@ void ProcessSequencesFast(const Options &opts,
+           // Add terminator for protein sequences if not already there
+           if (opts.input_is_protein && sequence.seq.back() != '*')
+             sequence.seq.push_back('*');
+-          ProcessSequenceFast(sequence.seq, taxid, kraken_index, taxonomy,
+-                              scanner, opts.min_clear_hash_value);
++          ProcessSequenceFast(sequence.seq, taxid, accession_id, kraken_index, taxonomy,
++                              scanner, opts.min_clear_hash_value, accession_map);
+ #pragma omp atomic
+           processed_seq_ct++;
+ #pragma omp atomic
+@@ -217,7 +248,7 @@ void ProcessSequencesFast(const Options &opts,
+ void ProcessSequences(const Options &opts,
+                       const map<string, taxid_t> &ID_to_taxon_map,
+                       CompactHashTable &kraken_index,
+-                      const Taxonomy &taxonomy) {
++                      const Taxonomy &taxonomy, AccessionMap &accession_map) {
+   size_t processed_seq_ct = 0;
+   size_t processed_ch_ct = 0;
+ 
+@@ -229,6 +260,13 @@ void ProcessSequences(const Options &opts,
+       auto all_sequence_ids = ExtractNCBISequenceIDs(sequence->header);
+       taxid_t taxid = 0;
+       int ext_taxid;
++      string accession_id = "";
++      
++      // Use the first sequence ID as the accession ID
++      if (!all_sequence_ids.empty()) {
++        accession_id = all_sequence_ids[0];
++      }
++      
+       for (auto &seqid : all_sequence_ids) {
+         if (ID_to_taxon_map.count(seqid) == 0 ||
+             ID_to_taxon_map.at(seqid) == 0) {
+@@ -242,7 +280,7 @@ void ProcessSequences(const Options &opts,
+         // Add terminator for protein sequences if not already there
+         if (opts.input_is_protein && sequence->seq.back() != '*')
+           sequence->seq.push_back('*');
+-        ProcessSequence(opts, sequence->seq, taxid, kraken_index, taxonomy);
++        ProcessSequence(opts, sequence->seq, taxid, accession_id, kraken_index, taxonomy, accession_map);
+         processed_seq_ct++;
+         processed_ch_ct += sequence->seq.size();
+       }
+@@ -302,9 +340,9 @@ void SetMinimizerLCA(CompactHashTable &hash, uint64_t minimizer, taxid_t taxid,
+     new_value = tax.LowestCommonAncestor(old_value, taxid);
+ }
+ 
+-void ProcessSequenceFast(const string &seq, taxid_t taxid,
++void ProcessSequenceFast(const string &seq, taxid_t taxid, const string &accession_id,
+     CompactHashTable &hash, const Taxonomy &tax, MinimizerScanner &scanner,
+-    uint64_t min_clear_hash_value)
++    uint64_t min_clear_hash_value, AccessionMap &accession_map)
+ {
+   scanner.LoadSequence(seq);
+   uint64_t *minimizer_ptr;
+@@ -318,11 +356,21 @@ void ProcessSequenceFast(const string &seq, taxid_t taxid,
+     while (! hash.CompareAndSet(*minimizer_ptr, new_taxid, &existing_taxid)) {
+       new_taxid = tax.LowestCommonAncestor(new_taxid, existing_taxid);
+     }
++    
++    // Add mapping to accession map if accession_id is provided and this minimizer
++    // contributes to the final taxid assignment
++    if (!accession_id.empty() && new_taxid == taxid && accession_map.IsValid()) {
++      try {
++        accession_map.AddMapping(*minimizer_ptr, accession_id);
++      } catch (const std::exception &e) {
++        std::cerr << "Warning: Failed to add accession mapping: " << e.what() << std::endl;
++      }
++    }
+   }
+ }
+ 
+-void ProcessSequence(const Options &opts, const string &seq, taxid_t taxid,
+-    CompactHashTable &hash, const Taxonomy &tax)
++void ProcessSequence(const Options &opts, const string &seq, taxid_t taxid, const string &accession_id,
++    CompactHashTable &hash, const Taxonomy &tax, AccessionMap &accession_map)
+ {
+   const int set_ct = 256;
+   omp_lock_t locks[set_ct];
+@@ -418,6 +466,15 @@ void ProcessSequence(const Options &opts, const string &seq, taxid_t taxid,
+       #pragma omp parallel for
+       for (size_t i = 0; i < safe_ct; i++) {
+         SetMinimizerLCA(hash, minimizer_list[i], taxid, tax);
++        
++        // Add mapping to accession map if accession_id is provided
++        if (!accession_id.empty() && accession_map.IsValid()) {
++          try {
++            accession_map.AddMapping(minimizer_list[i], accession_id);
++          } catch (const std::exception &e) {
++            std::cerr << "Warning: Failed to add accession mapping: " << e.what() << std::endl;
++          }
++        }
+       }
+ 
+       // Remove safe prefix and re-iterate to process remainder
+@@ -466,7 +523,7 @@ void ParseCommandLine(int argc, char **argv, Options &opts) {
+   int opt;
+   long long sig;
+ 
+-  while ((opt = getopt(argc, argv, "?hB:b:c:FH:m:n:o:t:k:l:M:p:r:s:S:T:X")) != -1) {
++  while ((opt = getopt(argc, argv, "?hB:b:c:FH:m:n:o:t:k:l:M:p:r:s:S:T:Xa:")) != -1) {
+     switch (opt) {
+       case 'h' : case '?' :
+         usage(0);
+@@ -551,6 +608,9 @@ void ParseCommandLine(int argc, char **argv, Options &opts) {
+       case 'X' :
+         opts.input_is_protein = true;
+         break;
++      case 'a' :
++        opts.accession_map_filename = optarg;
++        break;
+     }
+   }
+ 
+@@ -604,6 +664,7 @@ void usage(int exit_code) {
+        << "  -F            Use fast, nondeterministic building method\n"
+        << "  -B INT        Read block size\n"
+        << "  -b INT        Read subblock size\n"
+-       << "  -r INT        Bit storage requested for taxid" << endl;
++       << "  -r INT        Bit storage requested for taxid\n"
++       << "  -a FILENAME   Output filename for accession map" << endl;
+   exit(exit_code);
+ }
+diff --git forkSrcPrefix/src/classify.cc forkDstPrefix/src/classify.cc
+index c6aa5cf8696b4afe4165c02b3fa08171d90af8b9..5b1d964eee5eae373f46da65d0b710a4407bcf58 100644
+--- forkSrcPrefix/src/classify.cc
++++ forkDstPrefix/src/classify.cc
+@@ -17,6 +17,7 @@
+ #include "reports.h"
+ #include "utilities.h"
+ #include "readcounts.h"
++#include "accession_map.h"
+ using namespace kraken2;
+ 
+ using std::cout;
+@@ -44,6 +45,7 @@ struct Options {
+   string classified_output_filename;
+   string unclassified_output_filename;
+   string kraken_output_filename;
++  string accession_map_filename;
+   bool mpa_style_report;
+   bool report_kmer_data;
+   bool quick_mode;
+@@ -84,6 +86,7 @@ struct Options {
+     classified_output_filename.clear();
+     unclassified_output_filename.clear();
+     kraken_output_filename.clear();
++    accession_map_filename.clear();
+     filenames.clear();
+   }
+ };
+@@ -119,12 +122,12 @@ void usage(int exit_code=EX_USAGE);
+ void ProcessFiles(const char *filename1, const char *filename2,
+     KeyValueStore *hash, Taxonomy &tax,
+     IndexOptions &idx_opts, Options &opts, ClassificationStats &stats,
+-    OutputStreamData &outputs, taxon_counters_t &total_taxon_counters);
++    OutputStreamData &outputs, taxon_counters_t &total_taxon_counters, AccessionMap *accession_map);
+ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
+     KeyValueStore *hash, Taxonomy &tax, IndexOptions &idx_opts,
+     Options &opts, ClassificationStats &stats, MinimizerScanner &scanner,
+     vector<taxid_t> &taxa, taxon_counts_t &hit_counts,
+-    vector<string> &tx_frames, taxon_counters_t &my_taxon_counts);
++    vector<string> &tx_frames, taxon_counters_t &my_taxon_counts, AccessionMap *accession_map, string &best_accession_id);
+ void AddHitlistString(ostringstream &oss, vector<taxid_t> &taxa,
+     Taxonomy &taxonomy);
+ taxid_t ResolveTree(taxon_counts_t &hit_counts,
+@@ -240,10 +243,13 @@ void OpenFifos(Options &opts, pid_t pid) {
+   dup2(write_fd, 2);
+ }
+ 
+-std::tuple<IndexOptions, Taxonomy, KeyValueStore *>
++std::tuple<IndexOptions, Taxonomy, KeyValueStore *, AccessionMap *>
+ load_index(Options &opts) {
+   cerr << "Loading database information...";
+ 
++  // Enable AccessionMap debug mode
++  AccessionMap::SetDebugMode(true);
++
+   IndexOptions idx_opts = {0};
+   ifstream idx_opt_fs(opts.options_filename);
+   struct stat sb;
+@@ -256,16 +262,38 @@ load_index(Options &opts) {
+   Taxonomy taxonomy(opts.taxonomy_filename, opts.use_memory_mapping);
+   KeyValueStore *hash_ptr = new CompactHashTable(opts.index_filename, opts.use_memory_mapping);
+ 
++  AccessionMap *accession_map_ptr = nullptr;
++  if (!opts.accession_map_filename.empty()) {
++    cerr << " loading accession map...";
++    try {
++      accession_map_ptr = new AccessionMap(opts.accession_map_filename, opts.use_memory_mapping);
++      if (!accession_map_ptr->IsValid()) {
++        cerr << " failed to load, continuing without accession map...";
++        delete accession_map_ptr;
++        accession_map_ptr = nullptr;
++      } else {
++        cerr << " loaded " << accession_map_ptr->Size() << " mappings...";
++      }
++    } catch (const std::exception &e) {
++      cerr << " error loading accession map (" << e.what() << "), continuing without it...";
++      if (accession_map_ptr) {
++        delete accession_map_ptr;
++        accession_map_ptr = nullptr;
++      }
++    }
++  }
++
+   cerr << " done." << endl;
+ 
+-  return std::tuple<IndexOptions, Taxonomy, KeyValueStore*>( idx_opts, std::move(taxonomy), hash_ptr );
++  return std::tuple<IndexOptions, Taxonomy, KeyValueStore*, AccessionMap*>( idx_opts, std::move(taxonomy), hash_ptr, accession_map_ptr );
+ }
+ 
+-void classify(Options &opts, std::tuple<IndexOptions, Taxonomy, KeyValueStore *>& index_data) {
++void classify(Options &opts, std::tuple<IndexOptions, Taxonomy, KeyValueStore *, AccessionMap *>& index_data) {
+   taxon_counters_t taxon_counters; // stats per taxon
+   IndexOptions idx_opts = std::get<0>(index_data);
+   Taxonomy &taxonomy = std::get<1>(index_data);
+   KeyValueStore *hash_ptr = std::get<2>(index_data);
++  AccessionMap *accession_map_ptr = std::get<3>(index_data);
+ 
+   omp_set_num_threads(opts.num_threads);
+ 
+@@ -278,7 +306,7 @@ void classify(Options &opts, std::tuple<IndexOptions, Taxonomy, KeyValueStore *>
+   if (opts.filenames.empty()) {
+     if (opts.paired_end_processing && ! opts.single_file_pairs)
+       errx(EX_USAGE, "paired end processing used with no files specified");
+-    ProcessFiles(nullptr, nullptr, hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters);
++    ProcessFiles(nullptr, nullptr, hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters, accession_map_ptr);
+   }
+   else {
+     for (size_t i = 0; i < opts.filenames.size(); i++) {
+@@ -286,10 +314,10 @@ void classify(Options &opts, std::tuple<IndexOptions, Taxonomy, KeyValueStore *>
+         if (i + 1 == opts.filenames.size()) {
+           errx(EX_USAGE, "paired end processing used with unpaired file");
+         }
+-        ProcessFiles(opts.filenames[i], opts.filenames[i+1], hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters);
++        ProcessFiles(opts.filenames[i], opts.filenames[i+1], hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters, accession_map_ptr);
+         i += 1;
+       } else {
+-        ProcessFiles(opts.filenames[i], nullptr, hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters);
++        ProcessFiles(opts.filenames[i], nullptr, hash_ptr, taxonomy, idx_opts, opts, stats, outputs, taxon_counters, accession_map_ptr);
+       }
+     }
+   }
+@@ -334,7 +362,7 @@ void ClassifyDaemon(Options opts) {
+   daemonize();
+ 
+   std::vector<char *> args;
+-  std::map<std::string, std::tuple<IndexOptions, Taxonomy, KeyValueStore *>> indexes;
++  std::map<std::string, std::tuple<IndexOptions, Taxonomy, KeyValueStore *, AccessionMap *>> indexes;
+   std::stringstream ss;
+   char *cmdline = NULL;
+   size_t linecap = 0;
+@@ -359,7 +387,7 @@ void ClassifyDaemon(Options opts) {
+     if (pid == 0) {
+       OpenFifos(opts, getpid());
+       classify(opts, indexes[opts.index_filename]);
+-      for (auto i = 0; i < args.size(); i++) {
++      for (size_t i = 0; i < args.size(); i++) {
+         delete[] args[i];
+       }
+       exit(EXIT_SUCCESS);
+@@ -405,6 +433,9 @@ void ClassifyDaemon(Options opts) {
+   for (auto &entry : indexes) {
+     auto &index_data = entry.second;
+     delete std::get<2>(index_data);
++    if (std::get<3>(index_data)) {
++      delete std::get<3>(index_data);
++    }
+   }
+   for (auto i = 0; i < 3; i++) {
+     close(i);
+@@ -423,6 +454,9 @@ int main(int argc, char **argv) {
+     auto index_data = load_index(opts);
+     classify(opts, index_data);
+     delete std::get<2>(index_data);
++    if (std::get<3>(index_data)) {
++      delete std::get<3>(index_data);
++    }
+   }
+ 
+   return 0;
+@@ -463,8 +497,7 @@ void ReportStats(struct timeval time1, struct timeval time2,
+ void ProcessFiles(const char *filename1, const char *filename2,
+     KeyValueStore *hash, Taxonomy &tax,
+     IndexOptions &idx_opts, Options &opts, ClassificationStats &stats,
+-    OutputStreamData &outputs,
+-    taxon_counters_t &total_taxon_counters)
++    OutputStreamData &outputs, taxon_counters_t &total_taxon_counters, AccessionMap *accession_map)
+ {
+   // The priority queue for output is designed to ensure fragment data
+   // is output in the same order it was input
+@@ -496,6 +529,7 @@ void ProcessFiles(const char *filename1, const char *filename2,
+     uint64_t block_id;
+     OutputData out_data;
+     taxon_counters_t thread_taxon_counters;
++    string best_accession_id;
+ 
+     while (true) {
+       thread_stats.total_sequences = 0;
+@@ -562,17 +596,22 @@ void ProcessFiles(const char *filename1, const char *filename2,
+           call =
+               ClassifySequence(*seq1, *seq2, kraken_oss, hash, tax, idx_opts,
+                                opts, thread_stats, scanner, taxa, hit_counts,
+-                               translated_frames, thread_taxon_counters);
++                               translated_frames, thread_taxon_counters, accession_map, best_accession_id);
+         } else {
+           auto empty_sequence = Sequence();
+           call = ClassifySequence(*seq1, empty_sequence, kraken_oss, hash, tax, idx_opts,
+                                   opts, thread_stats, scanner, taxa, hit_counts,
+-                                  translated_frames, thread_taxon_counters);
++                                  translated_frames, thread_taxon_counters, accession_map, best_accession_id);
+         }
+         if (call) {
+           char buffer[1024] = "";
+-          sprintf(buffer, " kraken:taxid|%llu",
+-              (unsigned long long) tax.nodes()[call].external_id);
++          if (!best_accession_id.empty()) {
++            sprintf(buffer, " kraken:taxid|%llu|%s",
++                (unsigned long long) tax.nodes()[call].external_id, best_accession_id.c_str());
++          } else {
++            sprintf(buffer, " kraken:taxid|%llu",
++                (unsigned long long) tax.nodes()[call].external_id);
++          }
+           seq1->header += buffer;
+           c1_oss << seq1->to_string();
+           if (opts.paired_end_processing) {
+@@ -759,13 +798,13 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
+                          IndexOptions &idx_opts, Options &opts,
+                          ClassificationStats &stats, MinimizerScanner &scanner,
+                          vector<taxid_t> &taxa, taxon_counts_t &hit_counts,
+-                         vector<string> &tx_frames,
+-                         taxon_counters_t &curr_taxon_counts)
++                         vector<string> &tx_frames, taxon_counters_t &curr_taxon_counts, AccessionMap *accession_map, string &best_accession_id)
+ {
+   uint64_t *minimizer_ptr;
+   taxid_t call = 0;
+   taxa.clear();
+   hit_counts.clear();
++  best_accession_id.clear();
+   auto frame_ct = opts.use_translated_search ? 6 : 1;
+   int64_t minimizer_hit_groups = 0;
+ 
+@@ -811,6 +850,18 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
+               if (!opts.report_filename.empty()) {
+                 curr_taxon_counts[taxon].add_kmer(scanner.last_minimizer());
+               }
++              
++              // Track accession ID for this minimizer if available
++              if (accession_map && accession_map->IsValid() && !accession_map->Empty()) {
++                try {
++                  std::string accession = accession_map->GetAccession(*minimizer_ptr);
++                  if (!accession.empty()) {
++                    best_accession_id = accession;
++                  }
++                } catch (const std::exception &e) {
++                  // Ignore accession lookup errors and continue
++                }
++              }
+             }
+           }
+           else {
+@@ -1019,7 +1070,7 @@ void MaskLowQualityBases(Sequence &dna, int minimum_quality_score) {
+ void ParseCommandLine(int argc, char **argv, Options &opts) {
+   int opt;
+ 
+-  while ((opt = getopt(argc, argv, "h?H:t:o:T:p:R:C:U:O:Q:g:nmzqPSMKD")) != -1) {
++  while ((opt = getopt(argc, argv, "h?H:t:o:T:p:R:C:U:O:Q:g:nmzqPSMKDA:")) != -1) {
+     switch (opt) {
+       case 'h' : case '?' :
+         usage(0);
+@@ -1090,6 +1141,9 @@ void ParseCommandLine(int argc, char **argv, Options &opts) {
+       case 'D':
+         opts.daemon_mode = true;
+         break;
++      case 'A' :
++        opts.accession_map_filename = optarg;
++        break;
+     }
+   }
+ 
+@@ -1136,6 +1190,7 @@ void usage(int exit_code) {
+        << "  -U filename      Filename/format to have unclassified sequences" << endl
+        << "  -O filename      Output file for normal Kraken output" << endl
+        << "  -K               In comb. w/ -R, provide minimizer information in report" << endl
++       << "  -A filename      Kraken 2 accession map filename" << endl
+        << "  -D               Start a daemon, this options is intended to be used with wrappers" << std::endl;
+   exit(exit_code);
+ }
+diff --git forkSrcPrefix/src/CMakeLists.txt forkDstPrefix/src/CMakeLists.txt
+index 95ccaf3c0a4dcc722e8dc57c132aaef4414e3611..71f370766dc02503dd1833e665f9bf3754f1609b 100644
+--- forkSrcPrefix/src/CMakeLists.txt
++++ forkDstPrefix/src/CMakeLists.txt
+@@ -6,7 +6,8 @@ add_executable(build_db
+         seqreader.cc
+         mmscanner.cc
+         omp_hack.cc
+-        utilities.cc)
++        utilities.cc
++        accession_map.cc)
+ 
+ add_executable(classify
+         classify.cc
+@@ -19,7 +20,8 @@ add_executable(classify
+         omp_hack.cc
+         aa_translate.cc
+         utilities.cc
+-        hyperloglogplus.cc)
++        hyperloglogplus.cc
++        accession_map.cc)
+ 
+ add_executable(estimate_capacity
+         estimate_capacity.cc
+diff --git forkSrcPrefix/src/Makefile forkDstPrefix/src/Makefile
+index e6cb205e5cecaa227e246550439f8fd8ad4845ad..224390411a942719716def85b34246f0f2666ece 100644
+--- forkSrcPrefix/src/Makefile
++++ forkDstPrefix/src/Makefile
+@@ -25,19 +25,20 @@ omp_hack.o: omp_hack.cc omp_hack.h
+ reports.o: reports.cc reports.h kraken2_data.h
+ aa_translate.o: aa_translate.cc aa_translate.h
+ utilities.o: utilities.cc utilities.h
++accession_map.o: accession_map.cc accession_map.h mmap_file.h
+ 
+-classify.o: classify.cc kraken2_data.h kv_store.h taxonomy.h seqreader.h mmscanner.h compact_hash.h aa_translate.h reports.h utilities.h readcounts.h
++classify.o: classify.cc kraken2_data.h kv_store.h taxonomy.h seqreader.h mmscanner.h compact_hash.h aa_translate.h reports.h utilities.h readcounts.h accession_map.h
+ dump_table.o: dump_table.cc compact_hash.h taxonomy.h mmscanner.h kraken2_data.h reports.h
+ estimate_capacity.o: estimate_capacity.cc kv_store.h mmscanner.h seqreader.h utilities.h
+-build_db.o: build_db.cc taxonomy.h mmscanner.h seqreader.h compact_hash.h kv_store.h kraken2_data.h utilities.h
++build_db.o: build_db.cc taxonomy.h mmscanner.h seqreader.h compact_hash.h kv_store.h kraken2_data.h utilities.h accession_map.h
+ lookup_accession_numbers.o: lookup_accession_numbers.cc mmap_file.h utilities.h
+ k2mask.o: k2mask.cc gzstream.h threadpool.h
+ 
+-build_db: build_db.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o utilities.o
+-	$(CXX) $(CXXFLAGS) -o $@ build_db.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o utilities.o
++build_db: build_db.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o utilities.o accession_map.o
++	$(CXX) $(CXXFLAGS) -o $@ build_db.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o utilities.o accession_map.o
+ 
+-classify: classify.o reports.o hyperloglogplus.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o aa_translate.o utilities.o
+-	$(CXX) $(CXXFLAGS) -o $@ classify.o reports.o hyperloglogplus.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o aa_translate.o utilities.o
++classify: classify.o reports.o hyperloglogplus.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o aa_translate.o utilities.o accession_map.o
++	$(CXX) $(CXXFLAGS) -o $@ classify.o reports.o hyperloglogplus.o mmap_file.o compact_hash.o taxonomy.o seqreader.o mmscanner.o omp_hack.o aa_translate.o utilities.o accession_map.o
+ 
+ estimate_capacity: estimate_capacity.o seqreader.o mmscanner.o omp_hack.o utilities.o
+ 	$(CXX) $(CXXFLAGS) -o $@ estimate_capacity.o seqreader.o mmscanner.o omp_hack.o utilities.o
