@@ -112,6 +112,12 @@ def parse_timp(path):
                     result['command'] = command
                     result['executable'] = os.path.basename(parts[0]) if parts else ''
                     result['params'] = ' '.join(parts[1:]) if len(parts) > 1 else ''
+                    if 'nr_' in result['params']:
+                        result['executable'] = result['executable'] + '-nr'
+                    elif 'nr99_' in result['params']:
+                        result['executable'] = result['executable'] + '-nr99'
+                    elif 'seed_' in result['params']:
+                        result['executable'] = result['executable'] + '-seed'
             elif 'User time (seconds):' in line:
                 result['user time'] = float(line.split(':', 1)[1].strip())
             elif 'System time (seconds):' in line:
