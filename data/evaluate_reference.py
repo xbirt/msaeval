@@ -10,6 +10,9 @@ import pandas as pd
 from collections import defaultdict
 from multitax import SilvaTx
 
+CSV_FILENAME = 'reference_evaluation.csv'
+BASE_FOLDER = '../data/reference'
+
 def load_mothur_silva_mappings():
     """Load mothur to silva reference mappings from TSV files."""
     seed_mapping = {}
@@ -567,8 +570,10 @@ def get_column_indices(label):
 
 def process_benchmark_files(base_folder):
     """Process all benchmark files in the base folder recursively."""
-    results = []
     base_path = Path(base_folder)
+    
+    # Load existing processed entries
+    processed_entries = load_existing_csv()
     
     # Load mothur to silva mappings
     seed_mapping, nr99_mapping = load_mothur_silva_mappings()
@@ -580,6 +585,9 @@ def process_benchmark_files(base_folder):
     if acc_taxid is None or acc_organism is None or silva_tax is None:
         print("Warning: MultiTax SILVA system failed to load. Taxonomy analysis will be skipped.")
         print("Only identity analysis will be performed.")
+    
+    processed_count = 0
+    skipped_count = 0
     
     # Find all *_detalii.log files recursively
     pattern = "**/benchmark_*_detalii.log"
@@ -613,6 +621,16 @@ def process_benchmark_files(base_folder):
             # Extract input fasta file name
             input_fasta = extract_input_fasta(parameters)
             
+            # Get relative path from base folder (moved earlier)
+            relative_path = str(log_file.parent.relative_to(base_path))
+            
+            # Check if this entry has already been processed
+            entry_key = (relative_path, label, input_fasta or 'N/A')
+            if entry_key in processed_entries:
+                print(f"Skipping already processed entry: {entry_key}")
+                skipped_count += 1
+                continue
+            
             # Find results file
             results_file = find_results_file(label, parameters, log_file.parent)
             if not results_file:
@@ -640,6 +658,7 @@ def process_benchmark_files(base_folder):
                 print(f"Error: Unknown column indices for label {label}")
                 continue
             
+            print(f"Processing entry: {entry_key}")
             id_mapping = parse_results_file(results_path, label, col1_idx, col2_idx, seed_mapping, nr99_mapping)
             
             # Analyze FASTA file for identity and taxonomic accuracy
@@ -679,11 +698,8 @@ def process_benchmark_files(base_folder):
                     partial_percentage = (partial_identity_matches / total) * 100
                     partial_match_percent = f"{partial_percentage:.2f}"
             
-            # Get relative path from base folder
-            relative_path = log_file.parent.relative_to(base_path)
-            
             result_data = {
-                'relative_path': str(relative_path),
+                'relative_path': relative_path,
                 'timestamp': timestamp,
                 'label': label,
                 'input_fasta': input_fasta or 'N/A',
@@ -712,12 +728,20 @@ def process_benchmark_files(base_folder):
                     result_data[f'{level}_fp'] = "0"
                     result_data[f'{level}_fn'] = "0"
             
-            results.append(result_data)
+            # Append result to CSV immediately
+            append_result_to_csv(result_data)
+            
+            # Add to processed entries to avoid reprocessing in current session
+            processed_entries.add(entry_key)
+            processed_count += 1
             
         except Exception as e:
             print(f"Error processing {log_file}: {e}")
     
-    return results
+    print(f"\nProcessing completed:")
+    print(f"- Processed: {processed_count} new entries")
+    print(f"- Skipped: {skipped_count} existing entries")
+
 
 def analyze_fasta_identity_only(fasta_file, id_mapping):
     """
@@ -796,76 +820,98 @@ def save_results_to_csv(results, filename="reference_evaluation.csv"):
     except Exception as e:
         print(f"Error saving results to CSV: {e}")
 
-def print_ascii_table(results):
-    """Print results in a nicely formatted ASCII table."""
-    if not results:
-        print("No valid benchmark files found.")
-        return
-    
-    # Calculate column widths (only for the original table columns)
-    headers = ['File Path', 'Timestamp', 'Command Label', 'Input Fasta', 'Results File', 'Total Reads', 'Identical Matches', 'Match %', 'Partial Matches', 'Partial Match %']
-    col_widths = [len(header) for header in headers]
-    
-    for result in results:
-        col_widths[0] = max(col_widths[0], len(result['relative_path']))
-        col_widths[1] = max(col_widths[1], len(result['timestamp']))
-        col_widths[2] = max(col_widths[2], len(result['label']))
-        col_widths[3] = max(col_widths[3], len(result['input_fasta']))
-        col_widths[4] = max(col_widths[4], len(result['results_file']))
-        col_widths[5] = max(col_widths[5], len(result['total_reads']))
-        col_widths[6] = max(col_widths[6], len(result['identical_matches']))
-        col_widths[7] = max(col_widths[7], len(result['match_percent']))
-        col_widths[8] = max(col_widths[8], len(result['partial_matches']))
-        col_widths[9] = max(col_widths[9], len(result['partial_match_percent']))
-    
-    # Print table
-    def print_separator():
-        print('+' + '+'.join('-' * (width + 2) for width in col_widths) + '+')
-    
-    def print_row(values):
-        row = '|'
-        for i, value in enumerate(values):
-            row += f' {value:<{col_widths[i]}} |'
-        print(row)
-    
-    print_separator()
-    print_row(headers)
-    print_separator()
-    
-    for result in results:
-        print_row([
-            result['relative_path'],
-            result['timestamp'],
-            result['label'],
-            result['input_fasta'],
-            result['results_file'],
-            result['total_reads'],
-            result['identical_matches'],
-            result['match_percent'],
-            result['partial_matches'],
-            result['partial_match_percent']
-        ])
-    
-    print_separator()
-    print(f"\nTotal files processed: {len(results)}")
 
 def main():
     """Main function to process benchmark files and display results."""
-    base_folder = "../data/reference"
+    base_folder = BASE_FOLDER
     
     print(f"Processing benchmark files in: {base_folder}")
     print("=" * 50)
     
-    results = process_benchmark_files(base_folder)
+    process_benchmark_files(base_folder)
     
-    if results:
-        print("\nResults:")
-        print_ascii_table(results)
-        
-        # Save results to CSV
-        save_results_to_csv(results)
+    print(f"\nResults are being saved incrementally to {CSV_FILENAME}")
+    print("Processing complete!")
+
+def load_existing_csv(filename=CSV_FILENAME):
+    """Load existing CSV and return a set of processed entries (relative_path, label, input_fasta)."""
+    processed_entries = set()
+    
+    if not os.path.exists(filename):
+        return processed_entries
+    
+    try:
+        df = pd.read_csv(filename)
+        for _, row in df.iterrows():
+            entry = (row['relative_path'], row['label'], row['input_fasta'])
+            processed_entries.add(entry)
+        print(f"Loaded {len(processed_entries)} existing entries from {filename}")
+    except Exception as e:
+        print(f"Error reading existing CSV {filename}: {e}")
+    
+    return processed_entries
+
+def input_fasta_to_sort_key(input_fasta):
+    """Convert input_fasta format (e.g., '10k', '5m') to sortable integer."""
+    if not input_fasta or input_fasta == 'N/A':
+        return 0  # Put N/A entries first
+    
+    # Extract number and suffix
+    match = re.match(r'^(\d+)([km])$', input_fasta.lower())
+    if not match:
+        return 0  # Fallback for unexpected formats
+    
+    number = int(match.group(1))
+    suffix = match.group(2)
+    
+    if suffix == 'k':
+        return number * 1000
+    elif suffix == 'm':
+        return number * 1000000
     else:
-        print("No valid benchmark files found.")
+        return number
+
+def append_result_to_csv(result_data, filename=CSV_FILENAME):
+    """Append a single result to the CSV file and maintain sorted order."""
+    try:
+        # Define the column order
+        main_cols = ['relative_path', 'timestamp', 'label', 'input_fasta', 'results_file', 
+                    'total_reads', 'identical_matches', 'match_percent', 'partial_matches', 'partial_match_percent']
+        
+        taxonomic_levels = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'species_fuzzy']
+        taxonomic_cols = []
+        for level in taxonomic_levels:
+            taxonomic_cols.extend([f'{level}_precision', f'{level}_recall', f'{level}_f1_score', f'{level}_tp', f'{level}_fp', f'{level}_fn'])
+        
+        all_cols = main_cols + taxonomic_cols
+        
+        # Read existing data if file exists
+        existing_data = []
+        file_exists = os.path.exists(filename)
+        
+        if file_exists:
+            try:
+                df = pd.read_csv(filename)
+                existing_data = df.to_dict('records')
+            except Exception as e:
+                print(f"Warning: Could not read existing CSV for sorting: {e}")
+        
+        # Add new result
+        existing_data.append(result_data)
+        
+        # Sort by input_fasta (converted to numeric) then by label
+        existing_data.sort(key=lambda x: (input_fasta_to_sort_key(x['input_fasta']), x['label']))
+        
+        # Write sorted data back to CSV
+        with open(filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=all_cols)
+            writer.writeheader()
+            writer.writerows(existing_data)
+            
+        print(f"Appended and sorted result in {filename}")
+        
+    except Exception as e:
+        print(f"Error appending result to CSV: {e}")
 
 if __name__ == "__main__":
     main()
