@@ -10,6 +10,13 @@ from collections import defaultdict
 
 # Aggregates runtime metrics for the MSA benchmark results
 
+# Directory to search
+#DATA_DIR = '../data/de-novo'
+DATA_DIR = '../data/reference'
+
+# Filename to save the runtime metrics to
+OUTPUT_FILE = 'centralized_reference_msa_runtime_metrics.xlsx'
+
 # Create a new workbook and add two worksheets
 wb = openpyxl.Workbook()
 
@@ -40,9 +47,6 @@ reads_sheet.append(['Număr de citiri proiectate', 'Număr final de citiri'])
 # Insert the data
 for row in reads_data:
     reads_sheet.append(row)
-
-# Directory to search
-DATA_DIR = '../data/de-novo'
 
 # Patterns for log files
 LOG_PATTERN = re.compile(r'benchmark_(\d+)_([a-z]+)\.log$')
@@ -283,4 +287,4 @@ for exe in unique_executables:
 
 stats_sheet.freeze_panes = 'B3'
 
-wb.save('centralized_de_novo_msa_runtime_metrics.xlsx')
+wb.save(OUTPUT_FILE)

@@ -584,7 +584,7 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
     print(f"Total nucleotides (excluding gaps): {total_nucleotides}")
     print(f"Total gaps: {total_gaps}")
     print(f"Total character pairs: {total_pairs}")
-    print(f"Gap percentage: {total_gaps / (total_gaps + total_nucleotides):.2%}")
+    print(f"Gap Fraction: {total_gaps / (total_gaps + total_nucleotides):.2%}")
     print(f"TC score (threshold=10%): {tc_score_10:.4f}")
     print(f"TC score (threshold=20%): {tc_score_20:.4f}")
     print(f"TC score (threshold=30%): {tc_score_30:.4f}")
@@ -680,7 +680,7 @@ def evaluate_alignment(alignment_file, num_threads, output_base_name=None):
             "Total Nucleotides": total_nucleotides,
             "Total Gaps": total_gaps,
             "Total Character Pairs": total_pairs,
-            "Gap Percentage": total_gaps / (total_gaps + total_nucleotides),
+            "Gap Fraction": total_gaps / (total_gaps + total_nucleotides),
             "Total Gap Opens": total_gap_opens,
             "Total Gap Extensions": total_gap_extensions,
             "Average Gap Opens Per Sequence": avg_gap_opens,

@@ -6,6 +6,9 @@ import glob
 import csv
 from pathlib import Path
 from Bio import SeqIO
+import pandas as pd
+from collections import defaultdict
+from multitax import SilvaTx
 
 def load_mothur_silva_mappings():
     """Load mothur to silva reference mappings from TSV files."""
@@ -41,6 +44,380 @@ def load_mothur_silva_mappings():
         print(f"Warning: Could not load mothur2silva-nr99.txt: {e}")
     
     return seed_mapping, nr99_mapping
+
+def load_multitax_silva():
+    """Load MultiTax SILVA taxonomy system."""
+    try:
+        print("Loading SILVA accession-taxID mapping from taxmap file...")
+        # Load taxmap file with primaryAccession and taxid columns
+        taxmap_df = pd.read_csv(
+            "taxmap_slv_ssu_ref_138.txt.gz", 
+            sep='\t', 
+            dtype={'taxid': str}
+        )
+        
+        print(f"Loaded {len(taxmap_df)} total entries from taxmap file")
+        
+        # Remove duplicates by keeping first occurrence of each primaryAccession
+        taxmap_df_unique = taxmap_df.drop_duplicates(subset=['primaryAccession'], keep='first')
+        print(f"After removing duplicates: {len(taxmap_df_unique)} unique accessions")
+        
+        # Extract primaryAccession and taxid columns for MultiTax lookup
+        acc_taxid = taxmap_df_unique[['primaryAccession', 'taxid']].set_index('primaryAccession')
+        
+        # Extract primaryAccession and organism_name for species-level information
+        acc_organism = taxmap_df_unique[['primaryAccession', 'organism_name']].set_index('primaryAccession')
+        
+        print(f"Created {len(acc_taxid)} accession-taxID mappings")
+        print(f"Created {len(acc_organism)} accession-organism mappings for species information")
+        
+        print("Initializing SILVA taxonomy system...")
+        # Initialize with automatic SILVA download and lineage caching
+        silva_tax = SilvaTx(
+            files=["tax_slv_ssu_138.txt.gz"],
+            build_node_children=True,
+            build_name_nodes=True,
+            build_rank_nodes=True,
+            extended_names=True
+        )
+        
+        print("SILVA taxonomy system initialized successfully")
+        return acc_taxid, acc_organism, silva_tax
+        
+    except Exception as e:
+        print(f"Error loading MultiTax SILVA: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None
+
+def get_taxonomy_from_accession(accession, acc_taxid, acc_organism, silva_tax):
+    """Get taxonomy lineage from accession using MultiTax."""
+    try:
+        # Strip everything past the first dot (exclude the dot as well)
+        clean_accession = accession.split('.')[0] if '.' in accession else accession
+        
+        if clean_accession not in acc_taxid.index:
+            return None
+            
+        taxid_result = acc_taxid.loc[clean_accession, 'taxid']
+        
+        # Handle case where we might get a Series (multiple matches despite deduplication)
+        if isinstance(taxid_result, pd.Series):
+            taxid = taxid_result.iloc[0]  # Take the first value
+            print(f"Warning: Multiple taxids found for {clean_accession}, using first: {taxid}")
+        else:
+            taxid = taxid_result
+        
+        # Get lineage and ranks from MultiTax (up to genus level)
+        lineage = silva_tax.name_lineage(taxid)
+        ranks = silva_tax.rank_lineage(taxid)
+        
+        # Convert to dictionary mapping rank to name
+        taxonomy_dict = {}
+        for i, (name, rank) in enumerate(zip(lineage, ranks)):
+            if rank and name:
+                # Normalize rank names to match our standard levels
+                rank_lower = rank.lower()
+                if rank_lower in ['domain', 'phylum', 'class', 'order', 'family', 'genus']:
+                    taxonomy_dict[rank_lower] = name
+        
+        # Add species information from organism_name if available
+        if clean_accession in acc_organism.index:
+            organism_result = acc_organism.loc[clean_accession, 'organism_name']
+            
+            # Handle case where we might get a Series
+            if isinstance(organism_result, pd.Series):
+                organism_name = organism_result.iloc[0]  # Take the first value
+                print(f"Warning: Multiple organism names found for {clean_accession}, using first: {organism_name}")
+            else:
+                organism_name = organism_result
+                
+            if organism_name and pd.notna(organism_name):
+                # Clean up organism name (remove parenthetical information)
+                species_name = organism_name.split('(')[0].strip()
+                if species_name:
+                    taxonomy_dict['species'] = species_name
+        
+        return taxonomy_dict
+        
+    except Exception as e:
+        print(f"Error getting taxonomy from accession {accession} (clean: {clean_accession}): {e}")
+        return None
+
+def analyze_single_record_identity(record, read_id, id_mapping):
+    """Analyze identity for a single FASTA record. Returns (full_match, partial_match)."""
+    if read_id not in id_mapping:
+        return False, False
+    
+    mapping = id_mapping[read_id].lower()
+    header_lower = record.description.lower()
+    
+    # Check for full mapping presence
+    full_match = mapping in header_lower
+    
+    # Check for partial mapping (part before dot) presence
+    partial_match = False
+    if '.' in mapping:
+        partial_mapping = mapping.split('.')[0]
+        partial_match = partial_mapping in header_lower
+    else:
+        # If no dot, partial match is same as full match
+        partial_match = full_match
+    
+    return full_match, partial_match
+
+def analyze_single_record_taxonomy(record, read_id, id_mapping, acc_taxid, acc_organism, silva_tax):
+    """Analyze taxonomic accuracy for a single FASTA record using MultiTax."""
+    metrics_data = {}
+    standard_levels = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species']
+    
+    # Initialize metrics data for per-sequence tracking
+    for level in standard_levels:
+        metrics_data[level] = {
+            'correct': 0,      # True Positives: correctly classified
+            'incorrect': 0,    # False Positives: incorrectly classified  
+            'not_classified': 0 # False Negatives: not classified
+        }
+    
+    # Initialize fuzzy species matching metrics
+    metrics_data['species_fuzzy'] = {
+        'correct': 0,      # True Positives: correctly classified (fuzzy)
+        'incorrect': 0,    # False Positives: incorrectly classified (fuzzy)
+        'not_classified': 0 # False Negatives: not classified (fuzzy)
+    }
+    
+    # Extract reference accession from header
+    header = record.description
+    reference_match = re.search(r'reference=([^ ,]+)', header)
+    if not reference_match:
+        # If we can't extract reference, count as not classified for all levels
+        for level in standard_levels:
+            metrics_data[level]['not_classified'] = 1
+        metrics_data['species_fuzzy']['not_classified'] = 1
+        return metrics_data
+    
+    reference_accession = reference_match.group(1)
+    
+    # Get true taxonomy from reference accession
+    true_taxonomy = get_taxonomy_from_accession(reference_accession, acc_taxid, acc_organism, silva_tax)
+    if not true_taxonomy:
+        # If reference taxonomy not found, count as not classified for all levels
+        for level in standard_levels:
+            metrics_data[level]['not_classified'] = 1
+        metrics_data['species_fuzzy']['not_classified'] = 1
+        return metrics_data
+    
+    # Get predicted taxonomy (if any)
+    predicted_taxonomy = None
+    if read_id in id_mapping:
+        predicted_accession = id_mapping[read_id]
+        predicted_taxonomy = get_taxonomy_from_accession(predicted_accession, acc_taxid, acc_organism, silva_tax)
+    
+    # For each taxonomic level
+    for level in standard_levels:
+        # Get true taxon at this level
+        true_taxon_at_level = true_taxonomy.get(level)
+        
+        if not true_taxon_at_level:
+            # No true taxonomy at this level, skip
+            continue
+            
+        # Get predicted taxon at this level (if we have a prediction)
+        predicted_at_level = None
+        if predicted_taxonomy:
+            predicted_at_level = predicted_taxonomy.get(level)
+        
+        # Classify the prediction result
+        if predicted_at_level:
+            if predicted_at_level.lower().strip() == true_taxon_at_level.lower().strip():
+                metrics_data[level]['correct'] = 1  # True Positive
+            else:
+                metrics_data[level]['incorrect'] = 1  # False Positive
+        else:
+            metrics_data[level]['not_classified'] = 1  # False Negative
+    
+    # Handle fuzzy species matching separately
+    true_species = true_taxonomy.get('species')
+    if true_species:
+        predicted_species = None
+        if predicted_taxonomy:
+            predicted_species = predicted_taxonomy.get('species')
+        
+        if predicted_species:
+            # Check for exact match first
+            if predicted_species.lower().strip() == true_species.lower().strip():
+                metrics_data['species_fuzzy']['correct'] = 1  # True Positive (exact)
+            else:
+                # Check for fuzzy match (one starts with the other)
+                true_clean = true_species.lower().strip()
+                pred_clean = predicted_species.lower().strip()
+                
+                # Only do fuzzy matching if both have length > 0
+                if len(true_clean) > 0 and len(pred_clean) > 0:
+                    if true_clean.startswith(pred_clean) or pred_clean.startswith(true_clean):
+                        metrics_data['species_fuzzy']['correct'] = 1  # True Positive (fuzzy)
+                    else:
+                        metrics_data['species_fuzzy']['incorrect'] = 1  # False Positive
+                else:
+                    metrics_data['species_fuzzy']['incorrect'] = 1  # False Positive
+        else:
+            metrics_data['species_fuzzy']['not_classified'] = 1  # False Negative
+    # If no true species, fuzzy matching is not applicable, leave at 0
+    
+    return metrics_data
+
+def analyze_fasta(fasta_file, id_mapping, acc_taxid, acc_organism, silva_tax, label=""):
+    """
+    Analyze FASTA file once for both identity and taxonomic accuracy.
+    Returns identity metrics and taxonomic accuracy metrics.
+    """
+    try:
+        if not os.path.exists(fasta_file):
+            print(f"Warning: FASTA file {fasta_file} not found")
+            return 0, 0, 0, {}, {}
+        
+        # Initialize counters
+        full_identity_matches = 0
+        partial_identity_matches = 0
+        total_reads = 0
+        
+        # Initialize taxonomic metrics aggregation for per-sequence tracking
+        standard_levels = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species']
+        aggregated_taxonomy_data = {}
+        for level in standard_levels:
+            aggregated_taxonomy_data[level] = {
+                'correct': 0,      # Total True Positives
+                'incorrect': 0,    # Total False Positives
+                'not_classified': 0 # Total False Negatives
+            }
+        
+        # Initialize fuzzy species matching aggregation
+        aggregated_taxonomy_data['species_fuzzy'] = {
+            'correct': 0,      # Total True Positives (fuzzy)
+            'incorrect': 0,    # Total False Positives (fuzzy)
+            'not_classified': 0 # Total False Negatives (fuzzy)
+        }
+        
+        # Process each record in the FASTA file
+        for record in SeqIO.parse(fasta_file, "fasta"):
+            header = record.description
+            
+            # Extract ID (number after > followed by space)
+            id_match = re.match(r'^(\d+)\s', header)
+            if not id_match:
+                continue
+            
+            read_id = id_match.group(1)
+            total_reads += 1
+            
+            # Analyze identity for this record
+            full_match, partial_match = analyze_single_record_identity(record, read_id, id_mapping)
+            if full_match:
+                full_identity_matches += 1
+            if partial_match:
+                partial_identity_matches += 1
+            
+            # Analyze taxonomic accuracy for this record
+            taxonomy_data = analyze_single_record_taxonomy(record, read_id, id_mapping, acc_taxid, acc_organism, silva_tax)
+            
+            # Aggregate taxonomic data
+            for level in standard_levels:
+                aggregated_taxonomy_data[level]['correct'] += taxonomy_data[level]['correct']
+                aggregated_taxonomy_data[level]['incorrect'] += taxonomy_data[level]['incorrect']
+                aggregated_taxonomy_data[level]['not_classified'] += taxonomy_data[level]['not_classified']
+            
+            # Aggregate fuzzy species data
+            aggregated_taxonomy_data['species_fuzzy']['correct'] += taxonomy_data['species_fuzzy']['correct']
+            aggregated_taxonomy_data['species_fuzzy']['incorrect'] += taxonomy_data['species_fuzzy']['incorrect']
+            aggregated_taxonomy_data['species_fuzzy']['not_classified'] += taxonomy_data['species_fuzzy']['not_classified']
+        
+        print(f"Summary for {label} - {fasta_file}:")
+
+        # Calculate final taxonomic metrics
+        taxonomic_metrics = {}
+        taxonomic_raw_counts = {}
+        
+        # Process standard levels
+        for level in standard_levels:
+            correct = aggregated_taxonomy_data[level]['correct']
+            incorrect = aggregated_taxonomy_data[level]['incorrect']
+            not_classified = aggregated_taxonomy_data[level]['not_classified']
+            
+            # Calculate precision, recall, F1 using per-sequence counts
+            precision, recall, f1_score = calculate_sequence_precision_recall_f1(correct, incorrect, not_classified)
+            
+            taxonomic_metrics[level] = {
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1_score
+            }
+            
+            # Store raw counts
+            taxonomic_raw_counts[level] = {
+                'tp': correct,        # True Positives
+                'fp': incorrect,      # False Positives  
+                'fn': not_classified  # False Negatives
+            }
+            
+            total_sequences = correct + incorrect + not_classified
+            print(f"Level {level}: {correct} correct, {incorrect} incorrect, {not_classified} not classified (out of {total_sequences} total)")
+        
+        # Process fuzzy species matching
+        correct = aggregated_taxonomy_data['species_fuzzy']['correct']
+        incorrect = aggregated_taxonomy_data['species_fuzzy']['incorrect']
+        not_classified = aggregated_taxonomy_data['species_fuzzy']['not_classified']
+        
+        precision, recall, f1_score = calculate_sequence_precision_recall_f1(correct, incorrect, not_classified)
+        
+        taxonomic_metrics['species_fuzzy'] = {
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1_score
+        }
+        
+        taxonomic_raw_counts['species_fuzzy'] = {
+            'tp': correct,
+            'fp': incorrect,
+            'fn': not_classified
+        }
+        
+        total_sequences = correct + incorrect + not_classified
+        print(f"Level species_fuzzy: {correct} correct, {incorrect} incorrect, {not_classified} not classified (out of {total_sequences} total)")
+        
+        print(f"Identity analysis: {full_identity_matches} full matches, {partial_identity_matches} partial matches out of {total_reads} total reads")
+        
+        return full_identity_matches, partial_identity_matches, total_reads, taxonomic_metrics, taxonomic_raw_counts
+    
+    except Exception as e:
+        print(f"Error analyzing FASTA file: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Return default values
+        taxonomic_metrics = {}
+        taxonomic_raw_counts = {}
+        for level in standard_levels:
+            taxonomic_metrics[level] = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
+            taxonomic_raw_counts[level] = {'tp': 0, 'fp': 0, 'fn': 0}
+        # Add species_fuzzy default values
+        taxonomic_metrics['species_fuzzy'] = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
+        taxonomic_raw_counts['species_fuzzy'] = {'tp': 0, 'fp': 0, 'fn': 0}
+        return 0, 0, 0, taxonomic_metrics, taxonomic_raw_counts
+
+def calculate_sequence_precision_recall_f1(correct, incorrect, not_classified):
+    """Calculate precision, recall, and F1 score using per-sequence counts."""
+    if correct == 0 and incorrect == 0 and not_classified == 0:
+        return 1.0, 1.0, 1.0  # Perfect if no sequences to classify
+    
+    if correct == 0:
+        return 0.0, 0.0, 0.0  # No correct predictions
+    
+    # TP = correct, FP = incorrect, FN = not_classified
+    precision = correct / (correct + incorrect) if (correct + incorrect) > 0 else 0.0
+    recall = correct / (correct + not_classified) if (correct + not_classified) > 0 else 0.0
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    
+    return precision, recall, f1_score
 
 def extract_command_info(command_line):
     """Extract executable and parameters from command line."""
@@ -115,7 +492,9 @@ def find_results_file(label, parameters, log_file_dir):
         # Find report file with pattern --output ([^ ]+)
         report_match = re.search(r'--output ([^ ]+)', parameters)
         if report_match:
-            results_file = report_match.group(1)
+            output_file = report_match.group(1)
+            # Convert output.txt to headers.txt
+            results_file = output_file.replace('output.txt', 'headers.txt')
     
     return results_file
 
@@ -132,7 +511,7 @@ def parse_results_file(file_path, label, col1_idx, col2_idx, seed_mapping=None, 
     
     try:
         # Determine if it's CSV or TSV
-        is_csv = label.startswith('sina')
+        is_csv = label.startswith('sina') or label.startswith('kraken2')
         delimiter = ',' if is_csv else '\t'
         
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -173,47 +552,12 @@ def parse_results_file(file_path, label, col1_idx, col2_idx, seed_mapping=None, 
     
     return id_mapping
 
-def analyze_fasta_identity(fasta_file, id_mapping):
-    """Analyze FASTA file and calculate identity based on mappings."""
-    matches = 0
-    total = 0
-    
-    try:
-        if not os.path.exists(fasta_file):
-            print(f"Warning: FASTA file {fasta_file} not found")
-            return 0, 0
-        
-        for record in SeqIO.parse(fasta_file, "fasta"):
-            header = record.description
-            
-            # Extract ID (number after > followed by space)
-            id_match = re.match(r'^(\d+)\s', header)
-            if not id_match:
-                continue
-            
-            read_id = id_match.group(1)
-            total += 1
-            
-            # Look up mapping for this ID
-            if read_id in id_mapping:
-                mapping = id_mapping[read_id].lower()
-                header_lower = header.lower()
-                
-                # Check if mapping is found in header
-                if mapping in header_lower:
-                    matches += 1
-    
-    except Exception as e:
-        print(f"Error analyzing FASTA file {fasta_file}: {e}")
-    
-    return matches, total
-
 def get_column_indices(label):
     """Get column indices for different command types."""
     if label.startswith('sina'):
         return 0, 3  # columns 1 and 4 (0-indexed)
     elif label.startswith('kraken2'):
-        return 1, 4  # columns 2 and 5 (0-indexed)
+        return 0, 2  # columns 2 and 5 (0-indexed)
     elif label.startswith('minimap2'):
         return 0, 5  # columns 1 and 6 (0-indexed)
     elif label.startswith('mothur'):
@@ -228,6 +572,14 @@ def process_benchmark_files(base_folder):
     
     # Load mothur to silva mappings
     seed_mapping, nr99_mapping = load_mothur_silva_mappings()
+    
+    # Load MultiTax SILVA taxonomy system
+    acc_taxid, acc_organism, silva_tax = load_multitax_silva()
+    
+    # Check if MultiTax loaded successfully
+    if acc_taxid is None or acc_organism is None or silva_tax is None:
+        print("Warning: MultiTax SILVA system failed to load. Taxonomy analysis will be skipped.")
+        print("Only identity analysis will be performed.")
     
     # Find all *_detalii.log files recursively
     pattern = "**/benchmark_*_detalii.log"
@@ -273,7 +625,9 @@ def process_benchmark_files(base_folder):
                 print(f"Error: Results file {results_file} does not exist in {log_file.parent}")
                 continue
             
-            if not label.startswith('sina'):
+            if label == 'kraken2' and input_fasta == '10k':
+                pass
+            else:
                 #continue
                 pass
 
@@ -288,26 +642,47 @@ def process_benchmark_files(base_folder):
             
             id_mapping = parse_results_file(results_path, label, col1_idx, col2_idx, seed_mapping, nr99_mapping)
             
-            # Analyze FASTA file for identity
+            # Analyze FASTA file for identity and taxonomic accuracy
             total_reads = 0
             identical_matches = 0
             match_percent = "0.00"
+            partial_match_percent = "0.00"
+            
+            # Calculate precision, recall, F1 metrics
+            taxonomic_metrics = {}
+            taxonomic_raw_counts = {}
             
             if input_fasta:
                 fasta_file = f"{input_fasta}.fasta"
-                matches, total = analyze_fasta_identity(fasta_file, id_mapping)
+                
+                # Only perform taxonomy analysis if MultiTax loaded successfully
+                if acc_taxid is not None and acc_organism is not None and silva_tax is not None:
+                    full_matches, partial_identity_matches, total, taxonomic_metrics, taxonomic_raw_counts = analyze_fasta(fasta_file, id_mapping, acc_taxid, acc_organism, silva_tax, label)
+                else:
+                    # Only perform identity analysis
+                    full_matches, partial_identity_matches, total = analyze_fasta_identity_only(fasta_file, id_mapping)
+                    # Initialize empty taxonomic metrics
+                    for level in ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species']:
+                        taxonomic_metrics[level] = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
+                        taxonomic_raw_counts[level] = {'tp': 0, 'fp': 0, 'fn': 0}
+                    # Initialize species_fuzzy for fallback case
+                    taxonomic_metrics['species_fuzzy'] = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
+                    taxonomic_raw_counts['species_fuzzy'] = {'tp': 0, 'fp': 0, 'fn': 0}
                 
                 total_reads = total
-                identical_matches = matches
+                identical_matches = full_matches
                 
                 if total > 0:
-                    percentage = (matches / total) * 100
+                    percentage = (full_matches / total) * 100
                     match_percent = f"{percentage:.2f}"
+                    
+                    partial_percentage = (partial_identity_matches / total) * 100
+                    partial_match_percent = f"{partial_percentage:.2f}"
             
             # Get relative path from base folder
             relative_path = log_file.parent.relative_to(base_path)
             
-            results.append({
+            result_data = {
                 'relative_path': str(relative_path),
                 'timestamp': timestamp,
                 'label': label,
@@ -315,13 +690,111 @@ def process_benchmark_files(base_folder):
                 'results_file': results_file,
                 'total_reads': str(total_reads),
                 'identical_matches': str(identical_matches),
-                'match_percent': match_percent + '%'
-            })
+                'match_percent': match_percent + '%',
+                'partial_matches': str(partial_identity_matches),
+                'partial_match_percent': partial_match_percent + '%'
+            }
+            
+            # Add taxonomic metrics and raw counts to result data
+            for level in ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'species_fuzzy']:
+                if level in taxonomic_metrics:
+                    result_data[f'{level}_precision'] = f"{taxonomic_metrics[level]['precision']:.3f}"
+                    result_data[f'{level}_recall'] = f"{taxonomic_metrics[level]['recall']:.3f}"
+                    result_data[f'{level}_f1_score'] = f"{taxonomic_metrics[level]['f1_score']:.3f}"
+                    result_data[f'{level}_tp'] = str(taxonomic_raw_counts[level]['tp'])
+                    result_data[f'{level}_fp'] = str(taxonomic_raw_counts[level]['fp'])
+                    result_data[f'{level}_fn'] = str(taxonomic_raw_counts[level]['fn'])
+                else:
+                    result_data[f'{level}_precision'] = "0.000"
+                    result_data[f'{level}_recall'] = "0.000"
+                    result_data[f'{level}_f1_score'] = "0.000"
+                    result_data[f'{level}_tp'] = "0"
+                    result_data[f'{level}_fp'] = "0"
+                    result_data[f'{level}_fn'] = "0"
+            
+            results.append(result_data)
             
         except Exception as e:
             print(f"Error processing {log_file}: {e}")
     
     return results
+
+def analyze_fasta_identity_only(fasta_file, id_mapping):
+    """
+    Analyze FASTA file for identity only (when taxonomy system is not available).
+    Returns only identity metrics.
+    """
+    try:
+        if not os.path.exists(fasta_file):
+            print(f"Warning: FASTA file {fasta_file} not found")
+            return 0, 0, 0
+        
+        # Initialize counters
+        full_identity_matches = 0
+        partial_identity_matches = 0
+        total_reads = 0
+        
+        # Process each record in the FASTA file
+        for record in SeqIO.parse(fasta_file, "fasta"):
+            header = record.description
+            
+            # Extract ID (number after > followed by space)
+            id_match = re.match(r'^(\d+)\s', header)
+            if not id_match:
+                continue
+            
+            read_id = id_match.group(1)
+            total_reads += 1
+            
+            # Analyze identity for this record
+            full_match, partial_match = analyze_single_record_identity(record, read_id, id_mapping)
+            if full_match:
+                full_identity_matches += 1
+            if partial_match:
+                partial_identity_matches += 1
+        
+        print(f"Summary for {fasta_file} (identity only):")
+        print(f"Identity analysis: {full_identity_matches} full matches, {partial_identity_matches} partial matches out of {total_reads} total reads")
+        
+        return full_identity_matches, partial_identity_matches, total_reads
+    
+    except Exception as e:
+        print(f"Error analyzing FASTA file: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0, 0, 0
+
+def save_results_to_csv(results, filename="reference_evaluation.csv"):
+    """Save results to CSV file."""
+    if not results:
+        print("No results to save.")
+        return
+    
+    try:
+        # Create DataFrame from results
+        df = pd.DataFrame(results)
+        
+        # Reorder columns to have main metrics first, then taxonomic metrics
+        main_cols = ['relative_path', 'timestamp', 'label', 'input_fasta', 'results_file', 
+                    'total_reads', 'identical_matches', 'match_percent', 'partial_matches', 'partial_match_percent']
+        
+        # Add taxonomic metric columns
+        taxonomic_levels = ['domain', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'species_fuzzy']
+        taxonomic_cols = []
+        for level in taxonomic_levels:
+            taxonomic_cols.extend([f'{level}_precision', f'{level}_recall', f'{level}_f1_score', f'{level}_tp', f'{level}_fp', f'{level}_fn'])
+        
+        # Reorder columns
+        all_cols = main_cols + taxonomic_cols
+        existing_cols = [col for col in all_cols if col in df.columns]
+        df = df[existing_cols]
+        
+        # Save to CSV
+        df.to_csv(filename, index=False)
+        print(f"Results saved to {filename}")
+        
+    except Exception as e:
+        print(f"Error saving results to CSV: {e}")
 
 def print_ascii_table(results):
     """Print results in a nicely formatted ASCII table."""
@@ -329,8 +802,8 @@ def print_ascii_table(results):
         print("No valid benchmark files found.")
         return
     
-    # Calculate column widths
-    headers = ['File Path', 'Timestamp', 'Command Label', 'Input Fasta', 'Results File', 'Total Reads', 'Identical Matches', 'Match Percent']
+    # Calculate column widths (only for the original table columns)
+    headers = ['File Path', 'Timestamp', 'Command Label', 'Input Fasta', 'Results File', 'Total Reads', 'Identical Matches', 'Match %', 'Partial Matches', 'Partial Match %']
     col_widths = [len(header) for header in headers]
     
     for result in results:
@@ -342,6 +815,8 @@ def print_ascii_table(results):
         col_widths[5] = max(col_widths[5], len(result['total_reads']))
         col_widths[6] = max(col_widths[6], len(result['identical_matches']))
         col_widths[7] = max(col_widths[7], len(result['match_percent']))
+        col_widths[8] = max(col_widths[8], len(result['partial_matches']))
+        col_widths[9] = max(col_widths[9], len(result['partial_match_percent']))
     
     # Print table
     def print_separator():
@@ -366,7 +841,9 @@ def print_ascii_table(results):
             result['results_file'],
             result['total_reads'],
             result['identical_matches'],
-            result['match_percent']
+            result['match_percent'],
+            result['partial_matches'],
+            result['partial_match_percent']
         ])
     
     print_separator()
@@ -384,6 +861,9 @@ def main():
     if results:
         print("\nResults:")
         print_ascii_table(results)
+        
+        # Save results to CSV
+        save_results_to_csv(results)
     else:
         print("No valid benchmark files found.")
 

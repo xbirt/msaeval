@@ -7,7 +7,7 @@ python score.py -i muscle.fasta --threads 8 --output-base-name muscle
 python score.py -i clustalo.fasta --threads 8 --output-base-name clustalo
 python score.py -i mafft.fasta --threads 8 --output-base-name mafft
 
-# Evaluare scores against reference alignment and source data
+# Evaluate scores against reference alignment and source data
 python evaluate.py -i kalign.fasta --reference-alignment 10k-reference-full-alignment.fasta --source-data selected_species_10000_subset.fasta --threads 8 --dtw --output-base-name kalign
 python evaluate.py -i pasta.fasta --reference-alignment 10k-reference-full-alignment.fasta --source-data selected_species_10000_subset.fasta --threads 8 --dtw --output-base-name pasta
 python evaluate.py -i muscle.fasta --reference-alignment 10k-reference-full-alignment.fasta --source-data selected_species_10000_subset.fasta --threads 8 --dtw --output-base-name muscle
