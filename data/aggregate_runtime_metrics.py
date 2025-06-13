@@ -15,6 +15,7 @@ from collections import defaultdict
 DATA_DIR = '../data/reference'
 
 # Filename to save the runtime metrics to
+#OUTPUT_FILE = 'centralized_de_novo_msa_runtime_metrics.xlsx'
 OUTPUT_FILE = 'centralized_reference_msa_runtime_metrics.xlsx'
 
 # Create a new workbook and add two worksheets
@@ -32,10 +33,10 @@ reads_data = [
     ['0.1k', 91],
     ['0.5k', 455],
     ['1k', 898],
-    ['5k', 8965],
-    ['10k', 45059],
-    ['50k', 90192],
-    ['100k', 180206],
+    ['10k', 8965],
+    ['50k', 45059],
+    ['100k', 90192],
+    ['200k', 180206],
     ['500k', 449560],
     ['1m', 899192],
     ['2m', 1798684],
@@ -57,6 +58,9 @@ benchmark_data = {}
 # Recursively walk through all subdirectories
 for root, dirs, files in os.walk(DATA_DIR):
     for file in files:
+        # Accession runs are only used for the accuracy evaluation. The accession mapping adds time to the execution.
+        if 'kraken2-accession' in root:
+            continue
         match = LOG_PATTERN.match(file)
         if match:
             number, logtype = match.groups()
@@ -103,6 +107,13 @@ def parse_disc(path):
 def parse_timp(path):
     result = {}
     with open(path, encoding='utf-8') as f:
+        first_line = f.readline().strip()
+        # Check if command was terminated by signal
+        if first_line.startswith("Command terminated by signal"):
+            return None
+        
+        # Reset file pointer to beginning and continue processing
+        f.seek(0)
         for line in f:
             if 'Command being timed:' in line:
                 cmd = re.search(r'"(.+?)"', line)
@@ -112,11 +123,11 @@ def parse_timp(path):
                     result['command'] = command
                     result['executable'] = os.path.basename(parts[0]) if parts else ''
                     result['params'] = ' '.join(parts[1:]) if len(parts) > 1 else ''
-                    if 'nr_' in result['params']:
+                    if 'nr_' in result['params'].lower():
                         result['executable'] = result['executable'] + '-nr'
-                    elif 'nr99_' in result['params']:
+                    elif 'nr99_' in result['params'].lower():
                         result['executable'] = result['executable'] + '-nr99'
-                    elif 'seed_' in result['params']:
+                    elif 'seed_' in result['params'].lower():
                         result['executable'] = result['executable'] + '-seed'
             elif 'User time (seconds):' in line:
                 result['user time'] = float(line.split(':', 1)[1].strip())
@@ -149,7 +160,11 @@ for number, logs in benchmark_data.items():
     if 'disc' in logs:
         entry.update(parse_disc(logs['disc']))
     if 'timp' in logs:
-        entry.update(parse_timp(logs['timp']))
+        timp_result = parse_timp(logs['timp'])
+        if timp_result is None:
+            # Skip this entry if command was terminated by signal
+            continue
+        entry.update(timp_result)
     # Optionally, add more parsing for 'erori' and 'iesire' if needed
     parsed_benchmarks.append(entry)
 
